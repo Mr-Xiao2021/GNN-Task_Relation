@@ -161,5 +161,18 @@ cython_debug/
 .vscode/settings.json
 
 
-cache_data
-saved_exp
+# Local model and dataset caches
+/cache_data/
+
+# Training runs, checkpoints, and exported models
+/saved_exp/
+/lightning_logs/
+/wandb/
+/outputs/
+/checkpoints/
+*.ckpt
+*.pth
+*.onnx
+
+# Local reference material
+/2310.00149.pdf

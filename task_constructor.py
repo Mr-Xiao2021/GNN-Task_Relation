@@ -195,7 +195,7 @@ def make_data(name, data, split_name, metric, eval_func, num_classes, **kwargs):
 ######################################################
 
 def ConstructNodeCls(dataset, split, split_name, prompt_feats, to_bin_cls_func, global_data, task_level, **kwargs):
-    text_g = dataset.data
+    text_g = dataset.data # pyg
 
     return SubgraphHierDataset(text_g, prompt_feats["class_node_text_feat"], prompt_feats["prompt_edge_text_feat"],
                                prompt_feats["noi_node_text_feat"], split[split_name], to_undirected=True,
@@ -204,14 +204,14 @@ def ConstructNodeCls(dataset, split, split_name, prompt_feats, to_bin_cls_func, 
 
 
 def ConstructNodeNopromptCls(dataset, split, split_name, to_bin_cls_func, global_data, **kwargs):
-    text_g = dataset.data
+    text_g = dataset.data # pyg
 
     return SubgraphNopromptDataset(text_g, text_g.label_text_feat, split[split_name], to_undirected=True,
                                    process_label_func=to_bin_cls_func, **kwargs, )
 
 
 def ConstructLinkCls(dataset, split, split_name, prompt_feats, to_bin_cls_func, global_data, task_level, **kwargs):
-    text_g = dataset.data
+    text_g = dataset.data # pyg
     edges = text_g.edge_index
     train_graph = global_data
 
@@ -294,6 +294,7 @@ def ConstructFSTask(dataset, split, split_name, prompt_feats, to_bin_cls_func, g
 def process_pth_label(embs, label):
     binary_rep = torch.zeros((1, len(embs)))
     binary_rep[0, label.squeeze().to(torch.long)] = 1
+    # shape: (1,1), (class,D), (1,class)
     return label.view(1, -1).to(torch.long), embs, binary_rep
 
 
@@ -332,7 +333,7 @@ def process_label_positive_only(embs, label):
 
 def process_int_label(embs, label):
     binary_rep = torch.zeros((1, len(embs)))
-    binary_rep[0, label] = 1
+    binary_rep[0, label] = 1 # one hot 
     return torch.tensor([label]).view(1, -1), embs, binary_rep
 
 def process_fewshot_label(embs, label):
@@ -456,6 +457,7 @@ class UnifiedTaskConstructor:
         return dataset_config["dataset_name"] + "_" + dataset_config["task_level"]
 
     def get_stage_name(self, stage_config, dataset_config):
+        # 配置名_原始数据集名_任务类型_阶段_划分名
         return "_".join([stage_config["dataset"], self.get_split_key(dataset_config), stage_config["stage"],
                          stage_config["split_name"]])
 

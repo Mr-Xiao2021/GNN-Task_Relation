@@ -30,13 +30,19 @@ def construct_dgl_graph_from_edges(
 
 
 def sample_fixed_hop_size_neighbor(adj_mat: object, root: object, hop: object, max_nodes_per_hop: object = 500) -> object:
-    visited = np.array(root)
-    fringe = np.array(root)
-    nodes = np.array([])
+    '''
+    含义：距离根节点 1 到 hop 跳之内采样到的邻居节点编号
+    类型：numpy.ndarray
+    dtype：整数，通常是 int64
+    shape：(M,)
+    '''
+    visited = np.array(root) # 已经访问过的节点
+    fringe = np.array(root)# 当前这一跳新发现的节点
+    nodes = np.array([])# 最终收集到的邻居
     for h in range(1, hop + 1):
         u = adj_mat[fringe].nonzero()[1]
-        fringe = np.setdiff1d(u, visited)
-        visited = np.union1d(visited, fringe)
+        fringe = np.setdiff1d(u, visited) # 从当前找到的邻居 u 中，删除所有已经访问过的节点。
+        visited = np.union1d(visited, fringe) # 把当前新发现的节点加入“已访问节点集合”。
         if len(fringe) > max_nodes_per_hop:
             fringe = np.random.choice(fringe, max_nodes_per_hop)
         if len(fringe) == 0:

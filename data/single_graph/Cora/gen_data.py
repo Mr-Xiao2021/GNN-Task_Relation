@@ -67,11 +67,11 @@ def get_data(dset):
     return (
         [new_data],
         [
-            clean_text,
-            edge_text,
-            noi_node_text + noi_node_edge_text,
-            label_text + edge_label_text + logic_label_text,
-            prompt_edge_text,
+            clean_text, # node_text_feat
+            edge_text, # edge_text_feat
+            noi_node_text + noi_node_edge_text, # noi_node_text_feat
+            label_text + edge_label_text + logic_label_text, # class_node_text_feat
+            prompt_edge_text, # prompt_edge_text_feat
         ],
         {"e2e_node": {"noi_node_text_feat": ["noi_node_text_feat", [0]],
                       "class_node_text_feat": ["class_node_text_feat", torch.arange(len(label_text))],

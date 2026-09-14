@@ -150,22 +150,23 @@ class MultiAuc(torch.nn.Module):
 
 
 def scipy_rwpe(data, walk_length):
-    row, col = data.edge_index
+    row, col = data.edge_index # row=e, (e=edge_num)
     N = data.num_nodes
 
     value = data.edge_weight
     if value is None:
         value = torch.ones(data.num_edges, device=row.device)
-    value = scatter(value, row, dim_size=N, reduce="sum").clamp(min=1)[row]
+    value = scatter(value, row, dim_size=N, reduce="sum").clamp(min=1)[row] # 每条边都是同样的转移概率
     value = 1.0 / value
+    # 归一化邻接矩阵 P = D⁻¹A 
     adj = to_scipy_sparse_matrix(data.edge_index, edge_attr=value, num_nodes=data.num_nodes)
 
     out = adj
     pe_list = [out.diagonal()]
     for _ in range(walk_length - 1):
-        out = out @ adj
+        out = out @ adj # P, P², P³, ..., P¹⁶, for walk_length=16
         pe_list.append(out.diagonal())
-    pe = torch.tensor(np.stack(pe_list, axis=-1))
+    pe = torch.tensor(np.stack(pe_list, axis=-1)) # shape: (e, walk_length)
 
     return pe
 

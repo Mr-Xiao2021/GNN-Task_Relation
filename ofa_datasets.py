@@ -76,7 +76,7 @@ class GraphTextDataset(DatasetWithCollate, ABC):
                                     different tasks.
             **kwargs: additional arguments.
         """
-        self.prompt_edge_emb = None
+        self.prompt_edge_emb = None # overwrite by subclass, prompt_feats["prompt_edge_text_feat"]
         self.g = graph
         self.process_label_func = process_label_func
         self.kwargs = kwargs
@@ -143,9 +143,9 @@ class GraphTextDataset(DatasetWithCollate, ABC):
         Returns:
 
         """
-        (feat, edge_feat, edge_index, e_type, target_node_id, class_emb, label, binary_rep,) = feature_graph
-        n_feat_node = len(feat)
-        feat = self.make_prompt_node(feat, class_emb)
+        (feat, edge_feat, edge_index, e_type, target_node_id, class_emb, label, binary_rep,) = feature_graph # 采样后得到的
+        n_feat_node = len(feat) # one self + k neighbors （k+1）
+        feat = self.make_prompt_node(feat, class_emb) # overrited by subclass like SubgraphHierDataset 
         prompt_edge_lst = []
         prompt_edge_type_lst = []
         prompt_edge_feat_lst = []
@@ -167,24 +167,37 @@ class GraphTextDataset(DatasetWithCollate, ABC):
                 prompt_edge_feat = edge_emb
             else:
                 prompt_edge_feat = edge_emb.repeat(len(prompt_e_index[0]), axis=0)
-            prompt_edge_lst.append(prompt_e_index)
-            prompt_edge_type_lst.append(prompt_edge_types)
-            prompt_edge_feat_lst.append(prompt_edge_feat)
-        edge_index = torch.cat([edge_index] + prompt_edge_lst, dim=-1, )
-        e_type = torch.cat([e_type] + prompt_edge_type_lst)
-        edge_feat = np.concatenate([edge_feat] + prompt_edge_feat_lst, axis=0)
+            prompt_edge_lst.append(prompt_e_index) # 边索引
+            prompt_edge_type_lst.append(prompt_edge_types) # 边类型
+            prompt_edge_feat_lst.append(prompt_edge_feat) # 边特征
+        edge_index = torch.cat([edge_index] + prompt_edge_lst, dim=-1, ) # 采样得到子图边+特殊边(f2n+n2f+n2c+c2n, eg.)索引
+        e_type = torch.cat([e_type] + prompt_edge_type_lst) # 采样得到子图类型+特殊类型(f2n+n2f+n2c+c2n, eg.)
+        edge_feat = np.concatenate([edge_feat] + prompt_edge_feat_lst, axis=0) # 采样得到子图边特征+特殊边特征(f2n+n2f+n2c+c2n, eg.)
+        """
+        feat (1-self + k-neighbors + 1-noi + class_num, D), 
+        edge_index(2, e), e=e + 1(f2n) + 1(n2f) + class_num(n2c) + class_num(c2n), f:target_node
+        label: 标量真实类别 ID, 如 3
+        edge_feat: (e, D),  e=e + 1(f2n) + 1(n2f) + class_num(n2c) + class_num(c2n), f:target_node
+        e_type: (e,), e=e + 1(f2n) + 1(n2f) + class_num(n2c) + class_num(c2n), f:target_node, eg.
+        """
         return feat, edge_index, label, edge_feat, e_type
 
     def to_pyg(self, feature_graph, prompted_graph):
+        # 真实原子图feature_graph: feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep
         feat, edge_index, label, edge_feat, e_type = prompted_graph
+        # 注意prompted_graph得到feat的布局: (1-self + k-neighbors + 1-noi + class_num, D)
         new_subg = pyg.data.Data(feat, edge_index, y=label, edge_attr=edge_feat, edge_type=e_type)
-        num_class = len(feature_graph[-3])
+        num_class = len(feature_graph[-3]) # len(class_emb)
         bin_labels = torch.zeros(new_subg.num_nodes, dtype=torch.float)
         bin_labels[new_subg.num_nodes - num_class:] = feature_graph[-1]
         new_subg.bin_labels = bin_labels
+        # 类别节点位置掩码
         set_mask(new_subg, "true_nodes_mask", list(range(new_subg.num_nodes - num_class, new_subg.num_nodes)))
+        # NOI节点位置掩码
         set_mask(new_subg, "noi_node_mask", new_subg.num_nodes - num_class - 1)
+        # 目标节点位置掩码，其实就是self节点，SubgraphDataset为例恒是0
         set_mask(new_subg, "target_node_mask", feature_graph[-4])
+        # 特征节点位置掩码 (1-self+ k-neighbors)
         set_mask(new_subg, "feat_node_mask", list(range(len(feature_graph[0]))))
         new_subg.sample_num_nodes = new_subg.num_nodes
         new_subg.num_classes = num_class
@@ -243,33 +256,43 @@ class SubgraphDataset(GraphTextDataset):
         node_id = self.data_idx[index]
         neighbors = sample_fixed_hop_size_neighbor(self.adj, [node_id], self.hop,
                                                    max_nodes_per_hop=self.max_nodes_per_hop)
-        neighbors = np.r_[node_id, neighbors]
-        edges = self.adj[neighbors, :][:, neighbors].tocoo()
+        neighbors = np.r_[node_id, neighbors]  # [目标节点, 所有邻居...]
+        edges = self.adj[neighbors, :][:, neighbors].tocoo() # 提取子图边
         if self.class_mapping is not None:
             label = self.class_mapping[self.g.y[node_id]]
         else:
             label = self.g.y[node_id]
-        edge_index = torch.stack(
+        edge_index = torch.stack( # 子图的 edge_index
             [torch.tensor(edges.row, dtype=torch.long), torch.tensor(edges.col, dtype=torch.long), ])
         label, emb, binary_rep = self.process_label(label)
         return edge_index, neighbors, emb, label, binary_rep, [0]
 
     def make_feature_graph(self, index):
         (edge_index, neighbors, emb, label, binary_rep, target_node_id,) = self.get_neighbors(index)
-        feat = self.g.node_text_feat[neighbors]
-        e_type = torch.zeros(len(edge_index[0]), dtype=torch.long)
-        edge_feat = self.g.edge_text_feat.repeat(len(edge_index[0]), axis=0)
+        feat = self.g.node_text_feat[neighbors] # (k+1, D) 子图节点的文本特征, k为邻居节点数
+        e_type = torch.zeros(len(edge_index[0]), dtype=torch.long) # (e,)，原图中所有原生边的类型都是0
+        edge_feat = self.g.edge_text_feat.repeat(len(edge_index[0]), axis=0) # (e, D) 子图边的文本特征, (例如：SingleGraphOFADataset.add_text_emb)
         return (feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep,)
 
     def make_prompt_node(self, feat, class_emb):
         # Only feature nodes and class nodes, no NOI node.
         if not self.no_class_node:
+            """
+            论文0是target_node 
+            [论文0, 论文1, ..., 论文k, 类别0, 类别1, ..., 类别6]
+            ─────── 特征节点 ──────    ─────── Prompt 节点 ───────
+                    k+1 个                      7 个
+            """
             feat = np.concatenate([feat, class_emb], axis=0)
         return feat
 
     def make_f2n_edge(self, target_node_id, class_emb, n_feat_node):
+        # target_node_id * len(class_emb): 每条边都从目标节点出发
+        # [i + n_feat_node for i in range(len(class_emb))]: 连到每个类别节点
         prompt_edge = torch.tensor(
-            [target_node_id * len(class_emb), [i + n_feat_node for i in range(len(class_emb))], ], dtype=torch.long, )
+            [target_node_id * len(class_emb),
+            [i + n_feat_node for i in range(len(class_emb))]], dtype=torch.long)
+        # 结果: [[0,0,0,0,0,0,0], [k+1, k+2, ..., k+7]]  （假设target_node_id=0）
         return prompt_edge
 
     def make_n2f_edge(self, target_node_id, class_emb, n_feat_node):
@@ -302,25 +325,42 @@ class SubgraphHierDataset(SubgraphDataset):
         if self.no_class_node:
             feat = np.concatenate([feat, self.noi_node_emb], axis=0)
         else:
+            '''
+            [论文0, 论文1, ..., 论文k, NOI节点, 类别0, 类别1, ..., 类别6]
+            ───── 特征节点 ──────   位置:k+1   ────── 类别节点 ──────
+            k+1 (one-self,k-neighbor)  1 个        7 个(Cora e2e_node为例)
+            '''
             feat = np.concatenate([feat, self.noi_node_emb, class_emb], axis=0)
 
         return feat
 
     def make_f2n_edge(self, target_node_id, class_emb, n_feat_node):
+        """
+        f2n: 目标节点 → NOI节点, n_feat_node=k+1, (one-self,k-neighbor)
+        """
         prompt_edge = torch.tensor([target_node_id, [n_feat_node] * len(target_node_id)], dtype=torch.long, )
         return prompt_edge
 
     def make_n2f_edge(self, target_node_id, class_emb, n_feat_node):
+        """
+        n2f: NOI节点 → 目标节点
+        """
         prompt_edge = torch.tensor([[n_feat_node] * len(target_node_id), target_node_id], dtype=torch.long, )
         return prompt_edge
 
     def make_n2c_edge(self, target_node_id, class_emb, n_feat_node):
+        """
+        n2c: NOI节点 → 类别节点
+        """
         prompt_edge = torch.tensor(
             [[n_feat_node] * len(class_emb), [i + n_feat_node + 1 for i in range(len(class_emb))], ],
             dtype=torch.long, )
         return prompt_edge
 
     def make_c2n_edge(self, target_node_id, class_emb, n_feat_node):
+        """
+        c2n: 类别节点 → NOI节点
+        """
         prompt_edge = torch.tensor(
             [[i + n_feat_node + 1 for i in range(len(class_emb))], [n_feat_node] * len(class_emb)], dtype=torch.long, )
         return prompt_edge

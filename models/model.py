@@ -174,12 +174,13 @@ class BinGraphAttModel(torch.nn.Module):
                     ],
                     dim=-1,
                 )
-        emb = torch.stack(self.model(g), dim=1)
-        query = g.x.unsqueeze(1)
-        emb = self.att(emb, query, emb)[0].squeeze()
+        emb = torch.stack(self.model(g), dim=1) # [N, L, D]
+        query = g.x.unsqueeze(1) # [N, 1, D]
+        # 注意力：在同一个节点的不同 GNN 层之间计算。
+        emb = self.att(emb, query, emb)[0].squeeze() # key, query, value=> [N, D]
 
-        class_emb = emb[g.true_nodes_mask]
-        res = self.mlp(class_emb)
+        class_emb = emb[g.true_nodes_mask] # [C, D]
+        res = self.mlp(class_emb) # [C,1]
         return res
 
     def freeze_gnn_parameters(self):

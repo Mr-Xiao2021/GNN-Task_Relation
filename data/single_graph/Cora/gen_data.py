@@ -24,7 +24,7 @@ def get_logic_label(ordered_txt):
 def get_data(dset):
     cur_path = os.path.dirname(__file__)
     path = os.path.join(cur_path, "cora.pt")
-    data = torch.load(path)
+    data = torch.load(path, weights_only=False)
     text = data.raw_texts
     label_names = data.label_names
     nx_g = pyg.utils.to_networkx(data, to_undirected=True)

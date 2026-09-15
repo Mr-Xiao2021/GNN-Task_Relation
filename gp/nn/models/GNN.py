@@ -5,7 +5,7 @@ from abc import ABCMeta, abstractmethod
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter
+from torch_geometric.utils import scatter
 
 from gp.nn.models.util_model import MLP
 from gp.utils.utils import SmartTimer

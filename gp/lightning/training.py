@@ -1,3 +1,5 @@
+import os.path as osp
+
 import numpy as np
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -32,6 +34,7 @@ def lightning_fit(
     if save_model:
         callbacks.append(
             ModelCheckpoint(
+                dirpath=osp.join(logger.save_dir, "checkpoints"),
                 monitor=metrics.val_metric,
                 mode=metrics.eval_mode,
                 save_last=True,
@@ -55,8 +58,17 @@ def lightning_fit(
         check_val_every_n_epoch=val_interval,
     )
     trainer.fit(model, datamodule=data_module)
+    if save_model:
+        print(f"Best checkpoint: {trainer.checkpoint_callback.best_model_path}")
+        print(f"Last checkpoint: {trainer.checkpoint_callback.last_model_path}")
     if load_best:
         model_dir = trainer.checkpoint_callback.best_model_path
+        if not model_dir:
+            raise RuntimeError(
+                "No best checkpoint was produced. Check that the training "
+                "DataLoader has at least one batch and validation logs the "
+                f"monitored metric: {metrics.val_metric}."
+            )
         deep_speed = False
         if strategy[:9] == "deepspeed":
             deep_speed = True

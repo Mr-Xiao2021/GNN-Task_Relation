@@ -1,4 +1,3 @@
-import bitsandbytes as bnb
 import torch
 import torch.nn.functional as F
 from accelerate.hooks import remove_hook_from_module
@@ -14,6 +13,11 @@ from gp.nn.layer.pyg import RGCNEdgeConv
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.models.util_model import MLP
 from gp.utils.utils import load_pretrained_state
+
+try:
+    import bitsandbytes as bnb
+except ImportError:
+    bnb = None
 
 LLM_DIM_DICT = {"ST": 768, "BERT": 768, "e5": 1024, "llama2_7b": 4096, "llama2_13b": 5120}
 
@@ -225,6 +229,8 @@ class LLMModel(torch.nn.Module):
         """
         find all module for LoRA fine-tuning.
         """
+        if self.quantization and bnb is None:
+            raise RuntimeError("bitsandbytes is required for 4-bit LLM quantization")
         cls = bnb.nn.Linear4bit if self.quantization else torch.nn.Linear
         lora_module_names = set()
         for name, module in model.named_modules():
@@ -412,4 +418,3 @@ class PyGRGCNEdge(MultiLayerMessagePassing):
         return self.conv[layer](
             message["h"], message["he"], message["g"], message["e"]
         )
-

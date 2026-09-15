@@ -36,11 +36,14 @@ class SentenceEncoder:
         return all_embeddings
 
     def flush_model(self):
-        # delete llm from gpu to save GPU memory
+        # Delete the text encoder before GNN training to release accelerator memory.
         if self.model is not None:
             self.model = None
         gc.collect()
-        torch.cuda.empty_cache()
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            torch.npu.empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def binary_single_auc_func(func, output, batch):
@@ -172,14 +175,18 @@ def scipy_rwpe(data, walk_length):
 
 
 def get_available_devices():
-    r"""Get IDs of all available GPUs.
+    r"""Get IDs of all available accelerators.
 
     Returns:
-        device (torch.device): Main device (GPU 0 or CPU).
-        gpu_ids (list): List of IDs of all GPUs that are available.
+        device (torch.device): Main device (NPU, GPU, or CPU).
+        gpu_ids (list): List of available accelerator IDs.
     """
     gpu_ids = []
-    if torch.cuda.is_available():
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        gpu_ids += [device_id for device_id in range(torch.npu.device_count())]
+        device = torch.device(f'npu:{gpu_ids[0]}')
+        torch.npu.set_device(device)
+    elif torch.cuda.is_available():
         gpu_ids += [gpu_id for gpu_id in range(torch.cuda.device_count())]
         device = torch.device(f'cuda:{gpu_ids[0]}')
         torch.cuda.set_device(device)

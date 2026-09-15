@@ -24,7 +24,7 @@ def pth_safe_save(obj, path):
 
 def pth_safe_load(path):
     if osp.exists(path):
-        return torch.load(path)
+        return torch.load(path, weights_only=False)
     return None
 
 
@@ -60,7 +60,9 @@ class OFAPygDataset(InMemoryDataset, ABC):
         # if self.load_texts:
         #     self.texts = torch.load(self.processed_paths[1])
 
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(
+            self.processed_paths[0], weights_only=False
+        )
         self.side_data = pth_safe_load(self.processed_paths[2])
 
     def data2vec(self, data: list[str]) -> torch.Tensor:
@@ -204,7 +206,7 @@ class OFAPygSTDataset(OFAPygDataset):
         super().__init__(self.data_dir, transform, pre_transform)
 
         if load_text:
-            self.texts = torch.load(self.processed_paths[0])
+            self.texts = torch.load(self.processed_paths[0], weights_only=False)
 
         self.side_data = pth_safe_load(self.processed_paths[1])
         self.global_data = pth_safe_load(self.processed_paths[2])
@@ -248,5 +250,5 @@ class OFAPygSTDataset(OFAPygDataset):
         edge_memmap.flush()
 
     def get(self, idx):
-        data = torch.load(self.processed_paths[idx + 3])
+        data = torch.load(self.processed_paths[idx + 3], weights_only=False)
         return data

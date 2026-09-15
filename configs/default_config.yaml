@@ -11,6 +11,9 @@ num_workers: 4
 seed: 1
 data_path:
 offline_log: True
+log_project: "gnn-task-relation"
+wandb_entity:
+wandb_log_model: False
 exp_name: ""
 train_sample_size: -1
 eval_sample_size: -1
@@ -22,5 +25,6 @@ llm_b_size: 1
 load_texts: False
 max_nodes_per_hop: 100
 load_best: False
+save_model: False
 test_rep: 1
 val_interval: 1

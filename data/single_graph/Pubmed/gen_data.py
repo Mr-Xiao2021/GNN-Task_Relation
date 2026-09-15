@@ -7,7 +7,7 @@ import torch_geometric as pyg
 def get_data(dset):
     cur_path = os.path.dirname(__file__)
     path = os.path.join(cur_path, "pubmed.pt")
-    data = torch.load(path)
+    data = torch.load(path, weights_only=False)
     print(data)
     text = data.raw_texts
     nx_g = pyg.utils.to_networkx(data, to_undirected=True)

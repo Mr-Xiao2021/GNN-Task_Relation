@@ -103,10 +103,17 @@ class DataModule(LightningDataModule):
             )
 
     def train_dataloader(self):
+        train_data = self.datasets["train"]
+        train_size = (
+            train_data.sample_size
+            if train_data.sample_size > 0
+            else len(train_data.data)
+        )
         return self.create_dataloader(
-            self.datasets["train"].data,
-            self.datasets["train"].sample_size,
-            self.datasets["train"].batch_size,
+            train_data.data,
+            train_data.sample_size,
+            train_data.batch_size,
+            drop_last=train_size >= train_data.batch_size * self.gpu_size,
             num_workers=self.num_workers,
         )
 

@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 import yaml
-from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 from sklearn.model_selection import StratifiedKFold
 
 from gp.utils.io import load_yaml
@@ -91,9 +90,12 @@ def set_random_seed(seed):
         seed {int} -- Random seed to set
     """
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        torch.npu.manual_seed_all(seed)
+    elif torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     np.random.seed(seed)
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -347,10 +349,14 @@ def convert_yaml_params(params_path):
 
 def load_pretrained_state(model_dir, deepspeed=False):
     if deepspeed:
+        from deepspeed.utils.zero_to_fp32 import (
+            get_fp32_state_dict_from_zero_checkpoint,
+        )
+
         def _remove_prefix(key: str, prefix: str) -> str:
             return key[len(prefix):] if key.startswith(prefix) else key
         state_dict = get_fp32_state_dict_from_zero_checkpoint(model_dir)
         state_dict = {_remove_prefix(k, "_forward_module."): state_dict[k] for k in state_dict}
     else:
-        state_dict = torch.load(model_dir)["state_dict"]
+        state_dict = torch.load(model_dir, weights_only=False)["state_dict"]
     return state_dict

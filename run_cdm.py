@@ -3,7 +3,14 @@ import os
 from types import SimpleNamespace
 
 import torch
-from pytorch_lightning.loggers import WandbLogger
+
+try:
+    import torch_npu  # noqa: F401
+    import torch_npu.contrib.transfer_to_npu  # noqa: F401
+except ImportError:
+    pass
+
+from lightning.pytorch.loggers import WandbLogger
 from torchmetrics import AUROC, Accuracy
 
 import utils
@@ -180,13 +187,21 @@ def main(params):
     """
     wandb_logger = WandbLogger(
         project=params.log_project,
+        entity=params.wandb_entity,
         name=params.exp_name,
         save_dir=params.exp_dir,
         offline=params.offline_log,
+        log_model=params.wandb_log_model,
     )
+    run_config = vars(params).copy()
+    run_config.pop("datamodule", None)
+    wandb_logger.log_hyperparams(run_config)
 
 
-    strategy = "deepspeed_stage_2" if gpu_size > 1 else "auto"
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        strategy = "ddp" if gpu_size > 1 else "auto"
+    else:
+        strategy = "deepspeed_stage_2" if gpu_size > 1 else "auto"
     val_res, test_res = lightning_fit(
         wandb_logger,
         pred_model,
@@ -194,7 +209,7 @@ def main(params):
         metrics,
         params.num_epochs,
         strategy=strategy,
-        save_model=False,
+        save_model=params.save_model,
         load_best=params.load_best,
         reload_freq=1,
         test_rep=params.test_rep,
@@ -236,8 +251,6 @@ if __name__ == "__main__":
     set_random_seed(params.seed)
 
     torch.set_float32_matmul_precision("high")
-    params.log_project = "full_cdm"
-
     params.exp_name += f"_{params.llm_name}_ofa1"
 
     print(params)

@@ -196,6 +196,7 @@ def smiles2graph(smiles_string, removeHs=True, reorder_atoms=False):
 def get_raw_graphs(data_path):
     arr = torch.load(
         os.path.join(os.path.dirname(__file__), "chembl_pretrain.pth"),
+        weights_only=False,
     )
     graphs = []
     for i, entry in enumerate(arr[0]):

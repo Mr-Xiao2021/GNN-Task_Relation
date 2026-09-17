@@ -114,7 +114,7 @@ class GraphTextDataset(DatasetWithCollate, ABC):
 
         """
         (feat, edge_feat, edge_index, e_type, target_node_id, class_emb, label, binary_rep,) = feature_graph # 采样后得到的
-        n_feat_node = len(feat) # one self + k neighbors （k+1）
+        n_feat_node = len(feat) # 如cora_node为例：one self + k neighbors （k+1）
         feat = self.make_prompt_node(feat, class_emb) # overrited by subclass like SubgraphHierDataset 
         prompt_edge_lst = []
         prompt_edge_type_lst = []
@@ -143,7 +143,7 @@ class GraphTextDataset(DatasetWithCollate, ABC):
         edge_index = torch.cat([edge_index] + prompt_edge_lst, dim=-1, ) # 采样得到子图边+特殊边(f2n+n2f+n2c+c2n, eg.)索引
         e_type = torch.cat([e_type] + prompt_edge_type_lst) # 采样得到子图类型+特殊类型(f2n+n2f+n2c+c2n, eg.)
         edge_feat = np.concatenate([edge_feat] + prompt_edge_feat_lst, axis=0) # 采样得到子图边特征+特殊边特征(f2n+n2f+n2c+c2n, eg.)
-        """
+        """如cora_node为例:
         feat (1-self + k-neighbors + 1-noi + class_num, D), 
         edge_index(2, e), e=e + 1(f2n) + 1(n2f) + class_num(n2c) + class_num(c2n), f:target_node
         label: 标量真实类别 ID, 如 3
@@ -232,21 +232,21 @@ class SubgraphDataset(GraphTextDataset):
 
     def make_feature_graph(self, index):
         (edge_index, neighbors, emb, label, binary_rep, target_node_id,) = self.get_neighbors(index)
-        feat = self.g.node_text_feat[neighbors] # (k+1, D) 子图节点的文本特征, k为邻居节点数
+        feat = self.g.node_text_feat[neighbors] # 如cora_node, (k+1, D) 子图节点的文本特征, k为邻居节点数; cora_link, (k+2, D)
         e_type = torch.zeros(len(edge_index[0]), dtype=torch.long) # (e,)，原图中所有原生边的类型都是0
         edge_feat = self.g.edge_text_feat.repeat(len(edge_index[0]), axis=0) # (e, D) 子图边的文本特征, (例如：SingleGraphOFADataset.add_text_emb)
         return (feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep,)
 
-    def make_prompt_node(self, feat, class_emb):
+    def make_prompt_node(self, feat, class_emb): # 入参的feat是节点文本特征
         # Only feature nodes and class nodes, no NOI node.
         if not self.no_class_node:
             """
-            论文0是target_node 
+            node任务：论文0是target_node;link任务，论文0-论文1是目标边
             [论文0, 论文1, ..., 论文k, 类别0, 类别1, ..., 类别6]
             ─────── 特征节点 ──────    ─────── Prompt 节点 ───────
-                    k+1 个                      7 个
+                    k+1/2 个                      num_class 个
             """
-            feat = np.concatenate([feat, class_emb], axis=0)
+            feat = np.concatenate([feat, class_emb], axis=0) 
         return feat
 
     def make_f2n_edge(self, target_node_id, class_emb, n_feat_node):
@@ -291,7 +291,7 @@ class SubgraphHierDataset(SubgraphDataset):
             '''
             [论文0, 论文1, ..., 论文k, NOI节点, 类别0, 类别1, ..., 类别6]
             ───── 特征节点 ──────   位置:k+1   ────── 类别节点 ──────
-            k+1 (one-self,k-neighbor)  1 个        7 个(Cora e2e_node为例)
+            1+k (one-self,k-neighbor)  1 个        7 个(Cora e2e_node为例)
             '''
             feat = np.concatenate([feat, self.noi_node_emb, class_emb], axis=0)
 
@@ -330,21 +330,22 @@ class SubgraphHierDataset(SubgraphDataset):
 
 
 class SubgraphLinkHierDataset(SubgraphHierDataset):
+    # 注意此处的pyg_graph只有一个train_graph
     def __init__(self, pyg_graph, class_emb, prompt_edge_emb, noi_node_emb, edges, remove_edge=False, hop=2,
                  max_nodes_per_hop=100, class_mapping=None, to_undirected=False, process_label_func=None, adj=None, **kwargs, ):
         super().__init__(pyg_graph, class_emb, prompt_edge_emb, noi_node_emb, None, hop, max_nodes_per_hop, class_mapping,
                          to_undirected, process_label_func, adj, **kwargs, )
         self.edges = edges
         self.pos_index = len(self.edges)
-        self.remove_edge = remove_edge
+        self.remove_edge = remove_edge # 是否需要移除样本目标边
 
         # Sample negative edges for training and testing
-        dense_adj = self.adj.todense() == 0
+        dense_adj = self.adj.todense() == 0 # 此处的 self.adj是pyg_graph的adjacency matrix
         neg_row, neg_col = np.nonzero(dense_adj)
         neg_edge_idx = np.random.permutation(len(neg_row))[: self.pos_index]
         neg_row, neg_col = neg_row[neg_edge_idx], neg_col[neg_edge_idx]
         self.neg_edges = np.stack([neg_row, neg_col], axis=1)
-
+        # 构造出正边和负边，两种数量相等，都是入参pyg_graph(train_graph)的边数量
         self.total_edges = np.concatenate([self.edges, self.neg_edges], axis=0)
 
     def __len__(self):
@@ -365,16 +366,16 @@ class SubgraphLinkHierDataset(SubgraphHierDataset):
         node_ids = list(edge_id)
         neighbors = sample_fixed_hop_size_neighbor(self.adj, node_ids, self.hop,
                                                    max_nodes_per_hop=self.max_nodes_per_hop)
-        neighbors = np.r_[node_ids, neighbors]
+        neighbors = np.r_[node_ids, neighbors] # ⭐(u,v) + k-neighbors
         edges = self.adj[neighbors, :][:, neighbors].tocoo()
         row = edges.row
         col = edges.col
 
-        # Remove target edge from train graphs
+        # Remove target edge from train graphs （如果是正向的也就是train边而不是生成的负向边，那么就把这个train的目标边删除）
         if self.remove_edge and index < self.pos_index:
             row, col = self.remove_link(row, col)
         edge_index = torch.stack([torch.tensor(row, dtype=torch.long), torch.tensor(col, dtype=torch.long), ])
-        label, embs, binary_rep = self.process_label(label)
+        label, embs, binary_rep = self.process_label(label) # embs(2,D)
         return edge_index, neighbors, embs, label, binary_rep, [0, 1]
 
 

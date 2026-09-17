@@ -1,5 +1,6 @@
 import argparse
 import os
+from datetime import datetime
 from types import SimpleNamespace
 
 import torch
@@ -276,7 +277,8 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
     params.log_project = "full_cdm"
 
-    params.exp_name += f"_{params.llm_name}_ofa1"
+    run_timestamp = datetime.now().strftime("%y%m%d%H%M%S")
+    params.exp_name += f"_{params.llm_name}_ofa1_{run_timestamp}"
 
     print(params)
     main(params)

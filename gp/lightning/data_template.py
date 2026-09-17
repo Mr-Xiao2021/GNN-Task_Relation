@@ -103,10 +103,12 @@ class DataModule(LightningDataModule):
             )
 
     def train_dataloader(self):
+        train_data = self.datasets["train"]
         return self.create_dataloader(
-            self.datasets["train"].data,
-            self.datasets["train"].sample_size,
-            self.datasets["train"].batch_size,
+            train_data.data,
+            train_data.sample_size,
+            train_data.batch_size,
+            drop_last=False,
             num_workers=self.num_workers,
         )
 

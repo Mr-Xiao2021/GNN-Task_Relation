@@ -51,7 +51,7 @@ class OFAPygDataset(InMemoryDataset, ABC):
             suffix = self.encoder.llm_name
         else:
             suffix = 'raw'
-        self.data_dir = osp.join(self.root, self.name, suffix)
+        self.data_dir = osp.join(self.root,  self.name, suffix)
 
         super().__init__(self.data_dir, transform, pre_transform)
         safe_mkdir(self.data_dir)

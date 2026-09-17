@@ -1,14 +1,38 @@
-import bitsandbytes as bnb
+import numpy as np
 import torch
 import torch.nn.functional as F
-from accelerate.hooks import remove_hook_from_module
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from torch import Tensor
 from torch import nn
 from torch_geometric.nn.pool import global_add_pool
 from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
-from transformers import BitsAndBytesConfig
-from transformers import (LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, AutoModel)
+try:
+    from transformers import BitsAndBytesConfig
+    from transformers import LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, AutoModel
+except ImportError:
+    BitsAndBytesConfig = None
+    LlamaForCausalLM = None
+    LlamaTokenizer = None
+    AutoTokenizer = None
+    AutoModel = None
+
+try:
+    from accelerate.hooks import remove_hook_from_module
+except ImportError:
+    def remove_hook_from_module(module, recurse=True):
+        return module
+
+try:
+    import bitsandbytes as bnb
+except ImportError:
+    bnb = None
+
+try:
+    from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+except ImportError:
+    LoraConfig = None
+    PeftModel = None
+    get_peft_model = None
+    prepare_model_for_kbit_training = None
 
 from gp.nn.layer.pyg import RGCNEdgeConv
 from gp.nn.models.GNN import MultiLayerMessagePassing
@@ -103,7 +127,7 @@ class BinGraphModel(torch.nn.Module):
         return g
 
     def forward(self, g):
-        g = self.initial_projection(g)
+        g = self.initial_projection(g)# 投影 x 和 edge_attr
 
         if self.rwpe is not None:
             with torch.no_grad():
@@ -116,9 +140,9 @@ class BinGraphModel(torch.nn.Module):
                     ],
                     dim=-1,
                 )
-        emb = self.model(g)
-        class_emb = emb[g.true_nodes_mask]
-        res = self.mlp(class_emb)
+        emb = self.model(g) # GNN，得到所有节点表示
+        class_emb = emb[g.true_nodes_mask] # 每张图取num_class个类别节点
+        res = self.mlp(class_emb) # 每个类别节点输出 1 个分数
         return res
 
     def freeze_gnn_parameters(self):
@@ -204,17 +228,50 @@ class LLMModel(torch.nn.Module):
     If peft is ture, use lora with pre-defined parameter setting for efficient fine-tuning.
     quantization is set to 4bit and should be used in the most of the case to avoid OOM.
     """
-    def __init__(self, llm_name, quantization=True, peft=True, cache_dir="cache_data/model", max_length=500):
+    def __init__(
+        self,
+        llm_name,
+        quantization=True,
+        peft=True,
+        cache_dir="cache_data/model",
+        max_length=500,
+        adapter_path=None,
+        peft_trainable=True,
+    ):
         super().__init__()
         assert llm_name in LLM_DIM_DICT.keys()
+        if AutoModel is None:
+            raise ModuleNotFoundError(
+                "Text encoding requires transformers. Install transformers in the active environment."
+            )
+        if quantization and bnb is None:
+            raise ModuleNotFoundError(
+                "LLM quantization requires bitsandbytes. Install it or set llm_quantization=False."
+            )
+        if peft and get_peft_model is None:
+            raise ModuleNotFoundError(
+                "LLM fine-tuning requires peft. Install it or set llm_peft=False."
+            )
+        if adapter_path is not None and not peft:
+            raise ValueError("Loading a PEFT adapter requires llm_peft=True.")
         self.llm_name = llm_name
         self.quantization = quantization
+        self.peft = peft
+        self.adapter_path = adapter_path
 
         self.indim = LLM_DIM_DICT[self.llm_name]
         self.cache_dir = cache_dir
         self.max_length = max_length
         model, self.tokenizer = self.get_llm_model()
-        if peft:
+        if adapter_path is not None:
+            if quantization and peft_trainable:
+                model = prepare_model_for_kbit_training(model)
+            self.model = PeftModel.from_pretrained(
+                model,
+                adapter_path,
+                is_trainable=peft_trainable,
+            )
+        elif peft:
             self.model = self.get_lora_perf(model)
         else:
             self.model = model
@@ -338,6 +395,145 @@ class LLMModel(torch.nn.Module):
                 outputs = self.pooling(outputs, text_tokens)
 
             return outputs, text_tokens["attention_mask"]
+
+
+class EagerSentenceEncoder:
+    """Tokenize and encode graph text when a PyG batch reaches the model."""
+
+    def _init_eager_text_encoder(
+        self,
+        cache_dir,
+        peft,
+        quantization,
+        train_text_encoder,
+        adapter_path,
+        max_length,
+        text_batch_size,
+    ):
+        if train_text_encoder and quantization and not peft:
+            raise ValueError(
+                "Training a quantized base LLM requires PEFT. "
+                "Set llm_peft=True or llm_quantization=False."
+            )
+        self.train_text_encoder = train_text_encoder
+        self.text_batch_size = text_batch_size
+        self.llm_model = LLMModel(
+            self.llm_name,
+            quantization=quantization,
+            peft=peft,
+            cache_dir=cache_dir,
+            max_length=max_length,
+            adapter_path=adapter_path,
+            peft_trainable=train_text_encoder,
+        )
+        if not self.train_text_encoder:
+            self.llm_model.requires_grad_(False)
+            self.llm_model.eval()
+
+    def _encode_texts(self, texts):
+        num_texts = len(texts)
+        batch_size = self.text_batch_size if self.text_batch_size > 0 else num_texts
+        device = next(self.llm_model.parameters()).device
+        outputs = []
+        for start in range(0, num_texts, batch_size):
+            end = start + batch_size
+            token_batch = self.llm_model.tokenizer(
+                texts[start:end].tolist(),
+                return_tensors="pt",
+                padding="longest",
+                truncation=True,
+                max_length=self.llm_model.max_length,
+            )
+            token_batch = {key: value.to(device) for key, value in token_batch.items()}
+            if not self.train_text_encoder:
+                # Lightning calls train() on the parent module every epoch.
+                self.llm_model.eval()
+                output, _ = self.llm_model.encode(token_batch, pooling=True)
+            else:
+                output = self.llm_model(token_batch)
+            outputs.append(output)
+        return torch.cat(outputs, dim=0)
+
+    def _encode_graph_texts(self, g):
+        node_texts = np.asarray(g.x)
+        edge_texts = np.asarray(g.edge_attr)
+        text_inputs = np.concatenate([node_texts, edge_texts], axis=0)
+        unique_texts, text_mapping = np.unique(text_inputs, return_inverse=True)
+
+        text_features = self._encode_texts(unique_texts)
+        text_features = text_features.to(self.llm_proj.weight.dtype)
+
+        num_nodes = g.num_nodes
+        expected_texts = num_nodes + g.num_edges
+        if len(text_mapping) != expected_texts:
+            raise ValueError(
+                f"Expected {expected_texts} node/edge text mappings, "
+                f"but received {len(text_mapping)}."
+            )
+        text_mapping = torch.from_numpy(text_mapping).to(text_features.device)
+        text_features = text_features[text_mapping]
+        # 拆回节点和边特征
+        g.x = text_features[:num_nodes]
+        g.edge_attr = text_features[num_nodes:]
+        return g
+
+    def forward(self, g):
+        g = self._encode_graph_texts(g)
+        return super().forward(g)
+
+    def save_peft_adapter(self, output_dir):
+        if not self.llm_model.peft:
+            raise ValueError("save_peft_adapter requires llm_peft=True.")
+        self.llm_model.model.save_pretrained(output_dir)
+        self.llm_model.tokenizer.save_pretrained(output_dir)
+
+
+class BinGraphLLMModel(EagerSentenceEncoder, BinGraphModel):
+    def __init__(
+        self,
+        cache_dir="cache_data/model",
+        peft=False,
+        quantization=False,
+        train_text_encoder=False,
+        adapter_path=None,
+        max_length=500,
+        text_batch_size=1,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._init_eager_text_encoder(
+            cache_dir,
+            peft,
+            quantization,
+            train_text_encoder,
+            adapter_path,
+            max_length,
+            text_batch_size,
+        )
+
+
+class BinGraphAttLLMModel(EagerSentenceEncoder, BinGraphAttModel):
+    def __init__(
+        self,
+        cache_dir="cache_data/model",
+        peft=False,
+        quantization=False,
+        train_text_encoder=False,
+        adapter_path=None,
+        max_length=500,
+        text_batch_size=1,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._init_eager_text_encoder(
+            cache_dir,
+            peft,
+            quantization,
+            train_text_encoder,
+            adapter_path,
+            max_length,
+            text_batch_size,
+        )
 
 
 

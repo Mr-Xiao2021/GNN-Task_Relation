@@ -19,8 +19,15 @@ task_names:
   - arxiv
 llm_name: "ST"
 llm_b_size: 1
+llm_max_length: 500
+llm_peft: False
+llm_quantization: False
+llm_trainable: False
+llm_adapter_path:
+llm_adapter_save_path: "auto"
 load_texts: False
 max_nodes_per_hop: 100
 load_best: False
+save_model: False
 test_rep: 1
 val_interval: 1

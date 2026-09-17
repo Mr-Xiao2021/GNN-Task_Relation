@@ -13,51 +13,23 @@ from utils import scipy_rwpe, set_mask
 
 class OFA_collater:
     """
-    Collater is used for merge a batch of OFA data. It supports two modes:
-    1. If llm_tokenzier is None, collater assumes edge and node features are fixed size numpy array and convert it to torch tensor.
-    2. If llm_tokenzier is not None, collater assumes edge and node features are raw texts and use tokenzier to convert it to text ids.
-    All other attributes will be merged by default PyG collater.
+    Merge a batch of OFA graphs. Numeric features are converted to tensors;
+    raw text is left for the model-side online text encoder.
     """
-    def __init__(self, llm_tokenizer, llm_max_length):
-        self.llm_tokenizer = llm_tokenizer
-        self.llm_max_length = llm_max_length
+    def __init__(self):
         self.pyg_collater = pyg.loader.dataloader.Collater(None, None)
 
-    def return_unique_text_mapping(self, texts):
-        """
-        return unique text list with a mapping back to original list.
-        """
-        sorted_position = np.argsort(texts)
-        sorted_texts = texts[sorted_position]
-        keys = np.unique(sorted_texts)
-        lower = np.searchsorted(sorted_texts, keys)
-        higher = np.append(lower[1:], len(sorted_texts))
-        unique_texts = []
-        mappings = np.zeros(len(texts)).astype(int)
-        for i, (key, lower_i, higher_i) in enumerate(zip(keys, lower, higher)):
-            unique_texts.append(key)
-            mappings[sorted_position[lower_i: higher_i]] = i
-
-        return np.array(unique_texts), mappings
-
-    def tokenize(self, text_inputs):
-        text_tokens = self.llm_tokenizer(text_inputs,
-                                         return_tensors="pt",
-                                         padding="longest",
-                                         truncation=True,
-                                         max_length=self.llm_max_length)
-        return text_tokens
     def __call__(self, batch):
-        g = self.pyg_collater(batch)
-        if self.llm_tokenizer is None:
-            g.x = torch.from_numpy(np.concatenate(g.x, axis=0))
-            g.edge_attr = torch.from_numpy(np.concatenate(g.edge_attr, axis=0))
-        else:
-            text_inputs = np.concatenate(g.x + g.edge_attr, axis=0)
-            unique_text_inputs, text_mapping = self.return_unique_text_mapping(text_inputs)
-            text_tokens = self.tokenize(unique_text_inputs.tolist())
-            g.text_tokens = text_tokens
-            g.text_mapping = torch.from_numpy(text_mapping)
+        # batch: list[torch_geometric.data.Data]
+        g = self.pyg_collater(batch) # DataBatch
+        node_features = np.concatenate(g.x, axis=0)
+        edge_features = np.concatenate(g.edge_attr, axis=0)
+        if node_features.dtype.kind in {"U", "S", "O"}: # load_text = True
+            g.x = node_features
+            g.edge_attr = edge_features 
+        else: # default: load_text = False
+            g.x = torch.from_numpy(node_features)
+            g.edge_attr = torch.from_numpy(edge_features)
         return g
 
 
@@ -80,8 +52,6 @@ class GraphTextDataset(DatasetWithCollate, ABC):
         self.g = graph
         self.process_label_func = process_label_func
         self.kwargs = kwargs
-        self.llm_tokenizer = None
-        self.llm_max_length = None
         #self.edge_mode = 1
         if "prompt_edge_list" in kwargs:
             self.prompt_edge_list = kwargs["prompt_edge_list"]
@@ -185,11 +155,11 @@ class GraphTextDataset(DatasetWithCollate, ABC):
     def to_pyg(self, feature_graph, prompted_graph):
         # 真实原子图feature_graph: feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep
         feat, edge_index, label, edge_feat, e_type = prompted_graph
-        # 注意prompted_graph得到feat的布局: (1-self + k-neighbors + 1-noi + class_num, D)
+        # 注意prompted_graph得到feat的布局: shape(1-self + k-neighbors + 1-noi + class_num, D)
         new_subg = pyg.data.Data(feat, edge_index, y=label, edge_attr=edge_feat, edge_type=e_type)
         num_class = len(feature_graph[-3]) # len(class_emb)
         bin_labels = torch.zeros(new_subg.num_nodes, dtype=torch.float)
-        bin_labels[new_subg.num_nodes - num_class:] = feature_graph[-1]
+        bin_labels[new_subg.num_nodes - num_class:] = feature_graph[-1] # 最后几个节点是class节点
         new_subg.bin_labels = bin_labels
         # 类别节点位置掩码
         set_mask(new_subg, "true_nodes_mask", list(range(new_subg.num_nodes - num_class, new_subg.num_nodes)))
@@ -203,15 +173,8 @@ class GraphTextDataset(DatasetWithCollate, ABC):
         new_subg.num_classes = num_class
         return new_subg
 
-    def add_llm_tokenizer(self, tokenizer, llm_max_length):
-        """
-        add llm tokenizer for collater.
-        """
-        self.llm_tokenizer = tokenizer
-        self.llm_max_length = llm_max_length
-
     def get_collate_fn(self):
-        return OFA_collater(self.llm_tokenizer, self.llm_max_length)
+        return OFA_collater()
 
     def process_label(self, label):
         """
@@ -590,9 +553,6 @@ class FewShotDataset(DatasetWithCollate):
         self.fs_edge_feats = fs_edge_feats
         self.task_level = task_level
         self.sample_size = sample_size
-        self.llm_tokenizer = None
-        self.llm_max_length = None
-
     def get_noi_graph(self, dataset: GraphTextDataset, index, class_emb):
         feature_graph = list(dataset.make_feature_graph(index))
         feature_graph[-3] = class_emb
@@ -666,15 +626,12 @@ class FewShotDataset(DatasetWithCollate):
         return new_subg
 
     def get_collate_fn(self):
-        return OFA_collater(self.llm_tokenizer, self.llm_max_length)
-
-    def add_llm_tokenizer(self, tokenizer, llm_max_length):
-        self.llm_tokenizer = tokenizer
-        self.llm_max_length = llm_max_length
+        return OFA_collater()
 
 
 class MultiDataset(DatasetWithCollate):
     """
+    一个封装了不同 GraphTextDataset 用于训练的数据集。它还会根据验证结果，动态调整每个 epoch（训练轮次）中各训练数据集的占比。
     One dataset that wraps different GraphTextDataset for training. It also dynamically manage the portion of
     the training datasets in each epoch based on validation results.
     """
@@ -682,7 +639,7 @@ class MultiDataset(DatasetWithCollate):
     def __init__(self, datas, data_val_index=None, dataset_multiple=1, window_size=3, patience=3, min_ratio=0.1,
                  mode=None, ):
         self.datas = datas
-        self.sizes = np.array([len(d) for d in datas])
+        self.sizes = np.array([len(d) for d in datas]) # 每个数据集的样本数
         self.performance_record = []
         self.patience = patience
         self.data_val_index = data_val_index
@@ -707,25 +664,30 @@ class MultiDataset(DatasetWithCollate):
         self.compute_sizes()
 
     def compute_sizes(self):
+        # 例如两个数据集： [140*1.0, 300*0.5] = [140.0, 150.0] → [140, 150]
         self.aug_sizes = (self.sizes * np.array(self.dataset_multiple)).astype(int)
-        self.size_seg = np.cumsum(self.aug_sizes)
+        self.size_seg = np.cumsum(self.aug_sizes) # [140, 150]=> [140, 290]
+        # 由于可能有多个数据集(联合训练？)，建立槽位→数据集映射, 如[0]*140 + [1]*150, 此时len=290
         self.ind2dataset = np.arange(len(self.datas)).repeat(self.aug_sizes)
+        # self.sizes.repeat(self.aug_sizes))=>[140]*140 + [150]*150, 然后每个位置乘  [0,1) 随机数得到随机的索引
         self.sample_ind = (np.random.rand(len(self.ind2dataset)) * self.sizes.repeat(self.aug_sizes)).astype(int)
+        # 切割前缀，例如三数据集都是100样本，就是[100,200,300]=>[0,100,200]
         self.data_start_index = np.r_[0, self.size_seg[:-1]]
 
     def __len__(self):
-        return np.sum(self.aug_sizes)
+        return np.sum(self.aug_sizes) # 每个数据集的样本数的总和
 
     def __getitem__(self, index):
         dataset_ind = self.ind2dataset[index]
         dataset = self.datas[dataset_ind]
         ret_data = dataset[self.sample_ind[index]]
-        return ret_data
+        return ret_data # 返回的是一个Pyg Data对象
 
     def get_collate_fn(self):
         return self.datas[0].get_collate_fn()
 
     def update(self, metric):
+        # 设计意图：如果一个训练任务在验证集上长期不提升，就自动减少该任务的训练数据比例，把计算资源让给其他还在提升的任务。
         metric = np.array(metric)
         p_records = np.array(self.performance_record)
         for i in range(len(self.datas)):

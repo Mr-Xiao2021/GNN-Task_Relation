@@ -22,7 +22,12 @@ from gp.utils.utils import (
     set_random_seed,
 )
 from lightning_model import GraphPredLightning
-from models.model import BinGraphModel, BinGraphAttModel
+from models.model import (
+    BinGraphModel,
+    BinGraphAttModel,
+    BinGraphLLMModel,
+    BinGraphAttLLMModel,
+)
 from models.model import PyGRGCNEdge
 from task_constructor import UnifiedTaskConstructor
 from utils import (
@@ -44,7 +49,19 @@ def main(params):
     """
     1. Initiate task constructor.
     """
-    encoder = SentenceEncoder(params.llm_name, batch_size=params.llm_b_size)
+    # PEFT、量化和 adapter 路径等配置统一在 utils 中解析。
+    llm_config = utils.resolve_llm_config(params)
+
+    if params.load_texts:
+        # 数据集保留原始文本，由 EagerSentenceEncoder 在 batch 到达模型时编码。
+        encoder = None
+    else:
+        # 预处理时一次性编码整个数据集，并把 embedding 缓存到磁盘。
+        encoder = SentenceEncoder(
+            params.llm_name,
+            batch_size=params.llm_b_size,
+            max_length=llm_config.max_length,
+        )
 
     task_config_lookup = load_yaml(
         os.path.join(os.path.dirname(__file__), "configs", "task_config.yaml")
@@ -85,9 +102,26 @@ def main(params):
         JK=params.JK,
     )
 
-    bin_model = BinGraphAttModel if params.JK == "none" else BinGraphModel
-    model = bin_model(model=gnn, llm_name=params.llm_name, outdim=out_dim, task_dim=1,
-                      add_rwpe=params.rwpe, dropout=params.dropout)
+    if params.load_texts:
+        bin_model = BinGraphAttLLMModel if params.JK == "none" else BinGraphLLMModel
+        model = bin_model(
+            model=gnn,
+            llm_name=params.llm_name,
+            peft=llm_config.peft,
+            quantization=llm_config.quantization,
+            train_text_encoder=llm_config.trainable,
+            adapter_path=llm_config.adapter_path,
+            max_length=llm_config.max_length,
+            text_batch_size=params.llm_b_size,
+            outdim=out_dim,
+            task_dim=1,
+            add_rwpe=params.rwpe,
+            dropout=params.dropout,
+        )
+    else:
+        bin_model = BinGraphAttModel if params.JK == "none" else BinGraphModel
+        model = bin_model(model=gnn, llm_name=params.llm_name, outdim=out_dim, task_dim=1,
+                          add_rwpe=params.rwpe, dropout=params.dropout)
 
     """
     3. Construct datasets and lightning datamodule.
@@ -125,7 +159,7 @@ def main(params):
     eval_data = text_dataset["val"] + text_dataset["test"]
     val_state = [dt.state_name for dt in text_dataset["val"]]
     test_state = [dt.state_name for dt in text_dataset["test"]]
-    eval_state = val_state + test_state
+    eval_state = val_state + test_state # merge
     eval_metric = [dt.metric for dt in eval_data]
     eval_funcs = [dt.meta_data["eval_func"] for dt in eval_data]
     loss = torch.nn.BCEWithLogitsLoss()
@@ -173,7 +207,7 @@ def main(params):
     exp_config.val_state_name = val_state
     exp_config.test_state_name = test_state
 
-    pred_model = GraphPredLightning(exp_config, model, metrics)
+    pred_model = GraphPredLightning(exp_config, model,eval_kit=metrics)
 
     """
     6. Start training and logging.
@@ -194,12 +228,16 @@ def main(params):
         metrics,
         params.num_epochs,
         strategy=strategy,
-        save_model=False,
+        save_model=getattr(params, "save_model", False),
         load_best=params.load_best,
         reload_freq=1,
         test_rep=params.test_rep,
         val_interval=params.val_interval
     )
+
+    if params.load_texts and llm_config.adapter_save_path and os.environ.get("RANK", "0") == "0":
+        model.save_peft_adapter(llm_config.adapter_save_path)
+        print(f"PEFT adapter saved to: {os.path.abspath(llm_config.adapter_save_path)}")
 
 
 if __name__ == "__main__":

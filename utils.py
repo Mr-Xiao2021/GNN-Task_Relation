@@ -1,5 +1,6 @@
 import gc
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -10,14 +11,51 @@ from tqdm.autonotebook import trange
 from models.model import LLMModel
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
+def resolve_llm_config(params):
+    """解析运行时文本编码器配置，并规范化 adapter 路径。"""
+    config = SimpleNamespace(
+        max_length=getattr(params, "llm_max_length", 500),
+        peft=getattr(params, "llm_peft", False),
+        quantization=getattr(params, "llm_quantization", False),
+        trainable=getattr(params, "llm_trainable", False),
+        adapter_path=getattr(params, "llm_adapter_path", None),
+        adapter_save_path=getattr(params, "llm_adapter_save_path", None),
+    )
+
+    # 将 CLI/YAML 中的空值统一转换成 None，表示不加载或不保存 adapter。
+    if config.adapter_path in ("", "none", "None"):
+        config.adapter_path = None
+    if config.adapter_save_path in ("", "none", "None"):
+        config.adapter_save_path = None
+    elif config.adapter_save_path == "auto":
+        # 训练新 adapter 时，auto 默认保存到当前实验目录下。
+        if params.load_texts and config.peft and config.trainable:
+            config.adapter_save_path = os.path.join(params.exp_dir, "peft_adapter")
+        else:
+            config.adapter_save_path = None
+
+    if config.adapter_save_path is not None and not config.peft:
+        raise ValueError("llm_adapter_save_path requires llm_peft=True")
+    return config
+
+
 class SentenceEncoder:
-    def __init__(self, llm_name, cache_dir="cache_data/model", batch_size=1, multi_gpu=False):
+    def __init__(self, llm_name, cache_dir="cache_data/model", batch_size=1, multi_gpu=False, max_length=500):
         self.llm_name = llm_name
         self.device, _ = get_available_devices()
         self.batch_size = batch_size
         self.multi_gpu = multi_gpu
-        self.model = LLMModel(llm_name, quantization=False, peft=False, cache_dir=cache_dir)
+        self.max_length = max_length
+        self.model = LLMModel(
+            llm_name,
+            quantization=False,
+            peft=False,
+            cache_dir=cache_dir,
+            max_length=max_length,
+        )
         self.model.to(self.device)
+        self.model.eval()
 
     def encode(self, texts, to_tensor=True):
         all_embeddings = []
@@ -25,7 +63,7 @@ class SentenceEncoder:
             for start_index in trange(0, len(texts), self.batch_size, desc="Batches", disable=False, ):
                 sentences_batch = texts[start_index: start_index + self.batch_size]
                 text_tokens = self.model.tokenizer(sentences_batch, return_tensors="pt", padding="longest", truncation=True,
-                                           max_length=500).to(self.device)
+                                                   max_length=self.max_length).to(self.device)
                 embeddings, _ = self.model.encode(text_tokens, pooling=True)
                 embeddings = embeddings.cpu()
                 all_embeddings.append(embeddings)

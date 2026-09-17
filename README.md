@@ -4,6 +4,10 @@ Paper: [https://arxiv.org/abs/2310.00149](https://arxiv.org/abs/2310.00149)
 
 Authors: Hao Liu, Jiarui Feng, Lecheng Kong, Ningyue Liang, Dacheng Tao, Yixin Chen, Muhan Zhang
 
+## Development Log
+
+本仓库的功能扩展、实现说明和新增配置记录在 [dev.md](dev.md)。
+
 ![OFA Pipeline ](ofapipeline.png)
 
 OFA is a general Graph Classification Framework that can solves a wide range of graph classification tasks with a single

@@ -509,7 +509,7 @@ class UnifiedTaskConstructor:
                                                       **dataset_config["args"], )
         if stage_config["stage"] == "train":
             self.datasets[stage_config["stage"]].append(data)
-        else:
+        else: # val or test
             eval_data = make_data(stage_config["dataset"], data, stage_config["split_name"],
                                   dataset_config["eval_metric"], globals()[dataset_config["eval_func"]],
                                   dataset_config["num_classes"], batch_size=self.eval_batch_size,
@@ -536,13 +536,4 @@ class UnifiedTaskConstructor:
             "val": self.datasets["valid"],
             "test": self.datasets["test"], }
         return text_dataset
-
-    def inject_tokenizer(self, tokenizer, max_length):
-        for key, items in self.datasets.items():
-            if key == "train":
-                for dataset in items:
-                    dataset.add_llm_tokenizer(tokenizer, max_length)
-            else:
-                for dataset in items:
-                    dataset.data.add_llm_tokenizer(tokenizer, max_length)
 

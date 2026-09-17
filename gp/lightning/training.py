@@ -62,6 +62,12 @@ def lightning_fit(
 
     if load_best:
         model_dir = trainer.checkpoint_callback.best_model_path
+        if not model_dir:
+            raise RuntimeError(
+                "load_best=True, but no best checkpoint was created. "
+                "Check that the training dataloader contains at least one batch "
+                "and that the monitored validation metric was logged."
+            )
         deep_speed = False
         if strategy[:9] == "deepspeed":
             deep_speed = True

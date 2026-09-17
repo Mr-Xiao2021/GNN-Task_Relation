@@ -170,6 +170,8 @@ cython_debug/
 /wandb/
 /outputs/
 /checkpoints/
+/exp/time_pipe/encode-gnn/logs/
+/exp/time_pipe/encode-gnn/results/
 *.ckpt
 *.pth
 *.onnx

@@ -405,7 +405,7 @@ class EagerSentenceEncoder:
         cache_dir,
         peft,
         quantization,
-        train_text_encoder,
+        train_text_encoder, #是否将分词器也加入训练
         adapter_path,
         max_length,
         text_batch_size,
@@ -432,13 +432,18 @@ class EagerSentenceEncoder:
 
     def _encode_texts(self, texts):
         num_texts = len(texts)
+        if num_texts == 0:
+            raise ValueError("Cannot encode an empty text batch")
         batch_size = self.text_batch_size if self.text_batch_size > 0 else num_texts
         device = next(self.llm_model.parameters()).device
         outputs = []
         for start in range(0, num_texts, batch_size):
             end = start + batch_size
+            text_batch = texts[start:end]
+            if not isinstance(text_batch, list):
+                text_batch = text_batch.tolist()
             token_batch = self.llm_model.tokenizer(
-                texts[start:end].tolist(),
+                text_batch,
                 return_tensors="pt",
                 padding="longest",
                 truncation=True,
@@ -454,28 +459,55 @@ class EagerSentenceEncoder:
             outputs.append(output)
         return torch.cat(outputs, dim=0)
 
-    def _encode_graph_texts(self, g):
-        node_texts = np.asarray(g.x)
-        edge_texts = np.asarray(g.edge_attr)
-        text_inputs = np.concatenate([node_texts, edge_texts], axis=0)
-        unique_texts, text_mapping = np.unique(text_inputs, return_inverse=True)
+    @staticmethod
+    def _as_text_list(values):
+        if isinstance(values, np.ndarray):
+            values = values.reshape(-1).tolist()
+        else:
+            values = list(values)
+        return [value.decode() if isinstance(value, bytes) else str(value) for value in values]
 
-        text_features = self._encode_texts(unique_texts)
+    def _prepare_graph_texts(self, g):
+        node_texts = self._as_text_list(g.x)
+        edge_texts = self._as_text_list(g.edge_attr)
+        unique_texts = []
+        text_mapping = []
+        text_to_index = {}
+
+        for texts in (node_texts, edge_texts):
+            for text in texts:
+                text_index = text_to_index.get(text)
+                if text_index is None:
+                    text_index = len(unique_texts)
+                    text_to_index[text] = text_index
+                    unique_texts.append(text)
+                text_mapping.append(text_index)
+
+        return unique_texts, text_mapping, len(node_texts)
+
+    def _restore_graph_text_features(self, g, text_features, text_mapping, num_nodes):
         text_features = text_features.to(self.llm_proj.weight.dtype)
-
-        num_nodes = g.num_nodes
         expected_texts = num_nodes + g.num_edges
         if len(text_mapping) != expected_texts:
             raise ValueError(
                 f"Expected {expected_texts} node/edge text mappings, "
                 f"but received {len(text_mapping)}."
             )
-        text_mapping = torch.from_numpy(text_mapping).to(text_features.device)
+        text_mapping = torch.as_tensor(
+            text_mapping, dtype=torch.long, device=text_features.device
+        )
         text_features = text_features[text_mapping]
         # 拆回节点和边特征
         g.x = text_features[:num_nodes]
         g.edge_attr = text_features[num_nodes:]
         return g
+
+    def _encode_graph_texts(self, g):
+        unique_texts, text_mapping, num_nodes = self._prepare_graph_texts(g)
+        text_features = self._encode_texts(unique_texts)
+        return self._restore_graph_text_features(
+            g, text_features, text_mapping, num_nodes
+        )
 
     def forward(self, g):
         g = self._encode_graph_texts(g)

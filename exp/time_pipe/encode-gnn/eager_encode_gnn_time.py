@@ -31,8 +31,10 @@ def run_warmup(loader, model, params, device, warmup_batches):
 
 
 def time_eager_batches(loader, model, params, metric, device, batch_num):
-    # Text encoder wall time accumulated over the measured batches.
+    # Tokenization and text encoder wall time over the measured batches.
     encode_seconds = 0.0
+    text_prepare_seconds = 0.0
+    text_restore_seconds = 0.0
     # GNN forward wall time over the measured batches.
     gnn_seconds = 0.0
     # Number of batches and PyG graphs that actually enter the timing result.
@@ -41,6 +43,8 @@ def time_eager_batches(loader, model, params, metric, device, batch_num):
     # Raw node/edge text counts before per-batch text deduplication.
     encoded_node_texts = 0
     encoded_edge_texts = 0
+    unique_encoded_texts = 0
+    text_encoder_batches = 0
     # Number of scalar values in the model output.
     output_values = 0
     # Call the non-LLM parent forward after eager text encoding is complete.
@@ -56,9 +60,25 @@ def time_eager_batches(loader, model, params, metric, device, batch_num):
 
             utils.synchronize(device)
             start = time.perf_counter()
-            batch = model._encode_graph_texts(batch)
+            unique_texts, text_mapping, num_nodes = model._prepare_graph_texts(batch)
+            text_prepare_seconds += time.perf_counter() - start
+            unique_encoded_texts += len(unique_texts)
+            text_batch_size = model.text_batch_size
+            if text_batch_size <= 0:
+                text_batch_size = len(unique_texts)
+            text_encoder_batches += (len(unique_texts) + text_batch_size - 1) // text_batch_size
+
+            start = time.perf_counter()
+            text_features = model._encode_texts(unique_texts)
             utils.synchronize(device)
             encode_seconds += time.perf_counter() - start
+
+            start = time.perf_counter()
+            batch = model._restore_graph_text_features(
+                batch, text_features, text_mapping, num_nodes
+            )
+            utils.synchronize(device)
+            text_restore_seconds += time.perf_counter() - start
 
             start = time.perf_counter()
             output = gnn_forward(model, batch)
@@ -75,11 +95,15 @@ def time_eager_batches(loader, model, params, metric, device, batch_num):
         raise RuntimeError("No batches were measured; check split, batch_size, and drop_last")
     return {
         "encode_seconds": encode_seconds,
+        "text_prepare_seconds": text_prepare_seconds,
+        "text_restore_seconds": text_restore_seconds,
         "gnn_seconds": gnn_seconds,
         "measured_batches": measured_batches,
         "measured_graphs": measured_graphs,
         "encoded_node_texts": encoded_node_texts,
         "encoded_edge_texts": encoded_edge_texts,
+        "unique_encoded_texts": unique_encoded_texts,
+        "text_encoder_batches": text_encoder_batches,
         "output_values": output_values,
     }
 
@@ -120,11 +144,21 @@ def main():
         timing["measured_graphs"],
         timing["output_values"],
         extra={
-            "encode_scope": "texts in measured batches (deduplicated inside each batch)",
+            "encode_scope": "tokenization + text encoder forward on per-batch unique texts",
             "gnn_scope": "GNN forward on measured batches",
-            "ratio_scope": "measured-batch eager encode versus measured-batch GNN inference",
+            "ratio_scope": "tokenization + text encoder versus GNN; text preparation/restore excluded",
+            "text_prepare_seconds": timing["text_prepare_seconds"],
+            "text_restore_seconds": timing["text_restore_seconds"],
+            "eager_pipeline_seconds": (
+                timing["text_prepare_seconds"]
+                + timing["encode_seconds"]
+                + timing["text_restore_seconds"]
+                + timing["gnn_seconds"]
+            ),
             "encoded_node_texts_before_dedup": timing["encoded_node_texts"],
             "encoded_edge_texts_before_dedup": timing["encoded_edge_texts"],
+            "unique_encoded_texts": timing["unique_encoded_texts"],
+            "text_encoder_batches": timing["text_encoder_batches"],
             "encode_seconds_per_batch": timing["encode_seconds"] / timing["measured_batches"],
             **metric_report,
             "metric_scope": "selected measured batches; excluded from timing",

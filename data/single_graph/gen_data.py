@@ -15,11 +15,13 @@ class SingleGraphOFADataset(OFAPygDataset):
         return data_module.get_data(self)
 
     def add_raw_texts(self, data_list, texts):
-        data_list[0].node_text_feat = np.array(texts[0])
-        data_list[0].edge_text_feat = np.array(texts[1])
-        data_list[0].noi_node_text_feat = np.array(texts[2])
-        data_list[0].class_node_text_feat = np.array(texts[3])
-        data_list[0].prompt_edge_text_feat = np.array(texts[4])
+        # Object arrays keep variable-length strings instead of padding every
+        # item to the width of the longest text.
+        data_list[0].node_text_feat = np.asarray(texts[0], dtype=object)
+        data_list[0].edge_text_feat = np.asarray(texts[1], dtype=object)
+        data_list[0].noi_node_text_feat = np.asarray(texts[2], dtype=object)
+        data_list[0].class_node_text_feat = np.asarray(texts[3], dtype=object)
+        data_list[0].prompt_edge_text_feat = np.asarray(texts[4], dtype=object)
         return self.collate(data_list)
 
     def add_text_emb(self, data_list, text_emb):

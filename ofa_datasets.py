@@ -19,14 +19,30 @@ class OFA_collater:
     def __init__(self):
         self.pyg_collater = pyg.loader.dataloader.Collater(None, None)
 
+    @staticmethod
+    def _merge_features(features):
+        arrays = [np.asarray(feature) for feature in features]
+        is_text = any(array.dtype.kind in {"U", "S", "O"} for array in arrays)
+        if not is_text:
+            return np.concatenate(arrays, axis=0), False
+
+        # Combining Unicode arrays promotes every item to the longest string.
+        # A compact object array only stores references to the Python strings.
+        values = []
+        for array in arrays:
+            values.extend(array.reshape(-1).tolist())
+        return np.asarray(values, dtype=object), True
+
     def __call__(self, batch):
         # batch: list[torch_geometric.data.Data]
         g = self.pyg_collater(batch) # DataBatch
-        node_features = np.concatenate(g.x, axis=0)
-        edge_features = np.concatenate(g.edge_attr, axis=0)
-        if node_features.dtype.kind in {"U", "S", "O"}: # load_text = True
+        node_features, node_is_text = self._merge_features(g.x)
+        edge_features, edge_is_text = self._merge_features(g.edge_attr)
+        if node_is_text != edge_is_text:
+            raise TypeError("Node and edge features must both be text or both be numeric")
+        if node_is_text: # load_text = True
             g.x = node_features
-            g.edge_attr = edge_features 
+            g.edge_attr = edge_features
         else: # default: load_text = False
             g.x = torch.from_numpy(node_features)
             g.edge_attr = torch.from_numpy(edge_features)

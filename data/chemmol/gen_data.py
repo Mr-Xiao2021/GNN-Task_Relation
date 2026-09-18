@@ -112,11 +112,11 @@ class MolOFADataset(OFAPygDataset):
 
     def add_raw_texts(self, data_list, texts):
         data, slices = self.collate(data_list)
-        data.node_embs = np.array(texts[0])
-        data.edge_embs = np.array(texts[1])
-        data.class_node_text_feat = np.array(texts[2])
-        data.prompt_edge_text_feat = np.array(texts[3])
-        data.noi_node_text_feat = np.array(texts[4])
+        data.node_embs = np.asarray(texts[0], dtype=object)
+        data.edge_embs = np.asarray(texts[1], dtype=object)
+        data.class_node_text_feat = np.asarray(texts[2], dtype=object)
+        data.prompt_edge_text_feat = np.asarray(texts[3], dtype=object)
+        data.noi_node_text_feat = np.asarray(texts[4], dtype=object)
         return data, slices
 
     def add_text_emb(self, data_list, text_emb):

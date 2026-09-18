@@ -159,8 +159,11 @@ CUDA_VISIBLE_DEVICES=0 python exp/time_pipe/encode-gnn/eager_encode_gnn_time.py 
   ],
   "checkpoint_loaded": true,
   "measured_batches": 8,
+  "text_prepare_seconds": 0.12,
   "encode_seconds": 12.4,
+  "text_restore_seconds": 0.03,
   "gnn_seconds": 0.8,
+  "eager_pipeline_seconds": 13.35,
   "encode_percent": 93.94,
   "gnn_percent": 6.06,
   "metric_key": "test_cora_node/acc",
@@ -173,11 +176,33 @@ CUDA_VISIBLE_DEVICES=0 python exp/time_pipe/encode-gnn/eager_encode_gnn_time.py 
 
 | 字段 | 含义 |
 |---|---|
-| `encode_seconds` | 被统计 batch 的 eager 文本编码总时间 |
+| `text_prepare_seconds` | CPU 端整理节点/边文本、哈希去重并建立位置映射的时间 |
+| `encode_seconds` | tokenizer 和文本编码器 forward 的时间；只有 tokenizer 产出的张量会被送到 GPU |
+| `text_restore_seconds` | 按位置映射恢复节点/边 embedding 并写回 `g.x/g.edge_attr` 的时间 |
 | `gnn_seconds` | 相同 batch 的 GNN forward 总时间 |
 | `encode_percent` | encode 在 `encode + GNN` 中的时间占比 |
 | `gnn_percent` | GNN 在 `encode + GNN` 中的时间占比 |
+| `eager_pipeline_seconds` | `prepare + encode + restore + GNN` 的完整 eager 推理流水线时间 |
 | `metric_value` | 被统计 batch 对应的业务 metric；e2e_node 为 accuracy |
 | `checkpoint_loaded` | 是否成功加载指定 checkpoint |
 
-模型加载、数据准备、warmup 和 metric 更新不计入 `encode_seconds` 或 `gnn_seconds`。没有传入 `--checkpoint` 时脚本仍可运行，但 GNN 使用随机初始化权重，得到的 metric 没有模型效果评估意义。
+`encode_percent` 和 `gnn_percent` 有意只比较 tokenizer + 文本编码器与 GNN，不包含 CPU 文本整理和 embedding 位置还原。需要观察端到端代价时查看 `eager_pipeline_seconds` 及三个分项。
+
+模型加载、数据准备、warmup 和 metric 更新不计入上述推理时间。没有传入 `--checkpoint` 时脚本仍可运行，但 GNN 使用随机初始化权重，得到的 metric 没有模型效果评估意义。
+
+## 6. 旧 raw text 缓存迁移
+
+旧缓存可能使用 NumPy 固定宽度 Unicode 数组保存文本。以 WikiCS 为例，数组会按最长文本宽度保存每个元素，即使代码已经修复，现有 `.pt` 缓存也不会自动改变。首次使用新实现前，应移动旧缓存，让数据集重新生成 object array 格式：
+
+```bash
+mv cache_data/wikics/raw/processed cache_data/wikics/raw/processed_fixed_width_backup
+```
+
+如果 Cora 或 PubMed 也已经生成过 `load_texts=true` 缓存，可分别执行：
+
+```bash
+mv cache_data/Cora/raw/processed cache_data/Cora/raw/processed_fixed_width_backup
+mv cache_data/Pubmed/raw/processed cache_data/Pubmed/raw/processed_fixed_width_backup
+```
+
+目录名以本机 `cache_data` 中的实际大小写为准。下一次运行 eager 脚本会重新生成缓存；确认新缓存和推理正常后，再自行处理备份目录。

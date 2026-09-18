@@ -17,7 +17,7 @@ sys.path.insert(0, str(TIMING_UTILS_DIR))
 sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(PROJECT_ROOT)
 
-import timing_utils as project_timing
+import timing_utils as utils
 
 
 def parse_args():
@@ -31,6 +31,11 @@ def parse_args():
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--loader-index", type=int, default=0)
     parser.add_argument("--batch-num", type=int, default=1)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="PyG graphs per DataLoader batch; overrides YAML/config opts",
+    )
     parser.add_argument("--warmup-batches", type=int, default=1)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--rtol", type=float, default=1e-4)
@@ -211,14 +216,18 @@ def _ratio(numerator, denominator):
 
 def main():
     args = parse_args()
-    params = project_timing.load_params(args, load_texts=True)
+    params = utils.load_params(args, load_texts=True)
     params.batch_num = args.batch_num
-    device = project_timing.resolve_device(args.device)
+    if args.batch_size is not None:
+        if args.batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        params.batch_size = args.batch_size
+    device = utils.resolve_device(args.device)
 
     # Dataset/model construction and DataLoader work are deliberately excluded.
-    _, data_module = project_timing.build_task_data(params, encoder=None)
-    loader = project_timing.select_loader(data_module, args.split, args.loader_index)
-    model = project_timing.build_eager_model(params).to(device).eval()
+    _, data_module = utils.build_task_data(params, encoder=None)
+    loader = utils.select_loader(data_module, args.split, args.loader_index)
+    model = utils.build_eager_model(params).to(device).eval()
     warmup(loader, model, device, args.warmup_batches)
 
     batch_reports = []
@@ -335,11 +344,12 @@ def main():
     )
     report = {
         "scope": "after DataLoader returned g; GNN and metric excluded",
-        "task_names": project_timing.normalize_task_names(params.task_names),
+        "task_names": utils.normalize_task_names(params.task_names),
         "split": args.split,
         "loader_index": args.loader_index,
         "device": str(device),
         "llm_name": params.llm_name,
+        "batch_size": params.batch_size,
         "llm_batch_size": params.llm_b_size,
         "llm_max_length": params.llm_max_length,
         "measured_batches": len(batch_reports),

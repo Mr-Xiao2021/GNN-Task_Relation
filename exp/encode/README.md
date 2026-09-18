@@ -26,18 +26,20 @@ CUDA_VISIBLE_DEVICES=0 python exp/encode/benchmark_loaded_g.py \
   --split test \
   --loader-index 0 \
   --batch-num 1 \
+  --batch-size 128 \
   --warmup-batches 1 \
   --device cuda:0 \
   task_names wikics \
   llm_name ST \
   llm_b_size 100 \
   llm_max_length 500 \
-  batch_size 128 \
   num_workers 4
 ```
 
 `--batch-num` 控制测量多少个已加载 batch。配置覆盖参数必须放在脚本参数之后，因为最后一段由 `argparse.REMAINDER` 传给项目配置系统。
 使用 `--batch-num -1` 可以测量所选 loader 的全部 batch。
+
+`--batch-size` 控制一个 PyG DataLoader batch 中的图样本数，并在构造 DataLoader 前覆盖 YAML 和末尾配置参数。例如 `--batch-size 1 --batch-num 1` 表示只测量一个仅含一个图样本的 batch。
 
 ## Cora/PubMed 对照
 

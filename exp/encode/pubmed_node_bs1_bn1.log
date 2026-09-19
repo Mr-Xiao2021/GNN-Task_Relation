@@ -1,0 +1,58 @@
+[2026-09-19 11:50:46,186] [INFO] [real_accelerator.py:161:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+/data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torch_geometric/data/in_memory_dataset.py:284: UserWarning: It is not recommended to directly access the internal storage format `data` of an 'InMemoryDataset'. If you are absolutely certain what you are doing, access the internal storage via `InMemoryDataset._data` instead to suppress this warning. Alternatively, you can access stacked individual attributes of every graph via `dataset.{attr_name}`.
+  warnings.warn(msg)
+{
+  "scope": "total=model(g); encode=text preparation + tokenize + Transformer + feature restoration; gnn_and_head=total - encode and includes projection, optional RWPE/attention, GNN, and prediction head; DataLoader, device transfer, and benchmark input construction excluded; CUDA synchronized at the forward start, encode boundary, and forward end",
+  "config": {
+    "task_names": [
+      "pubmed_node"
+    ],
+    "split": "test",
+    "device": "cuda:0",
+    "llm_name": "ST",
+    "graph_batch_size": 1,
+    "text_batch_size": 100,
+    "max_text_length": 500,
+    "measured_batches": 1,
+    "repeats": 3
+  },
+  "seconds_per_batch": {
+    "fixed_width_numpy": {
+      "total": 0.13464136514812708,
+      "encode": 0.12685810215771198,
+      "gnn_and_head": 0.007783262990415096
+    },
+    "object_numpy": {
+      "total": 0.1292318869382143,
+      "encode": 0.12162011722102761,
+      "gnn_and_head": 0.007611769717186689
+    },
+    "python_hash": {
+      "total": 0.1293161199428141,
+      "encode": 0.1213708478026092,
+      "gnn_and_head": 0.007945272140204906
+    }
+  },
+  "result": {
+    "fastest_path": "object_numpy",
+    "object_numpy_faster_than_fixed_width": true,
+    "python_hash_faster_than_fixed_width": true,
+    "python_hash_faster_than_object_numpy": false,
+    "object_numpy_speedup_vs_fixed_width": 1.0418586955439182,
+    "python_hash_speedup_vs_fixed_width": 1.041180057116374,
+    "python_hash_speedup_vs_object_numpy": 0.9993486271886517
+  },
+  "outputs_match": true,
+  "fixed_width": {
+    "status": "measured",
+    "measured_batches": 1,
+    "max_input_gib": 0.0009068921208381653,
+    "max_estimated_peak_gib": 0.012671597301959991,
+    "inferred_node_dtypes": [
+      "<U3131"
+    ],
+    "inferred_edge_dtypes": [
+      "<U66"
+    ]
+  }
+}

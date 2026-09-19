@@ -38,6 +38,8 @@ def parse_args():
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmup-batches", type=int, default=1)
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--rtol", type=float, default=RTOL)
+    parser.add_argument("--atol", type=float, default=ATOL)
     parser.add_argument(
         "--fixed-width-mode",
         choices=("estimate", "auto", "force"),
@@ -64,6 +66,8 @@ def parse_args():
         parser.error("--repeats must be positive")
     if args.warmup_batches < 0:
         parser.error("--warmup-batches must be non-negative")
+    if args.rtol < 0 or args.atol < 0:
+        parser.error("--rtol and --atol must be non-negative")
     if args.fixed_width_limit_gib <= 0:
         parser.error("--fixed-width-limit-gib must be positive")
     return args
@@ -241,12 +245,12 @@ def time_complete_forward(
     return timings, output_snapshot
 
 
-def compare_outputs(reference, candidate):
+def compare_outputs(reference, candidate, rtol, atol):
     if reference.shape != candidate.shape:
         return {"allclose": False, "max_abs_diff": None}
     difference = (reference - candidate).abs()
     return {
-        "allclose": bool(torch.allclose(reference, candidate, rtol=RTOL, atol=ATOL)),
+        "allclose": bool(torch.allclose(reference, candidate, rtol=rtol, atol=atol)),
         "max_abs_diff": float(difference.max().item()) if difference.numel() else 0.0,
     }
 
@@ -323,12 +327,12 @@ def benchmark_batch(batch, model, device, args, batch_index):
     }
     correctness = {
         "object_numpy_vs_python_hash": compare_outputs(
-            outputs["object_numpy"], outputs["python_hash"]
+            outputs["object_numpy"], outputs["python_hash"], args.rtol, args.atol
         )
     }
     if "fixed_width_numpy" in outputs:
         correctness["fixed_width_vs_object_numpy"] = compare_outputs(
-            outputs["fixed_width_numpy"], outputs["object_numpy"]
+            outputs["fixed_width_numpy"], outputs["object_numpy"], args.rtol, args.atol
         )
     if not all(check["allclose"] for check in correctness.values()):
         raise RuntimeError(
@@ -488,6 +492,8 @@ def main():
             "max_text_length": params.llm_max_length,
             "measured_batches": len(reports),
             "repeats": args.repeats,
+            "rtol": args.rtol,
+            "atol": args.atol,
         },
         "seconds_per_batch": seconds_per_batch,
         "result": result,

@@ -233,6 +233,8 @@ def time_complete_forward(
         raise TypeError("Expected model(g) to return a Tensor")
     if encode_finished is None:
         raise RuntimeError("Model forward did not execute _encode_graph_texts")
+    if prepared is None:
+        raise RuntimeError("Model forward did not prepare graph texts")
     output_snapshot = output.detach().cpu()
     if validate_mapping:
         validate_text_mapping(prepared, node_texts, edge_texts)
@@ -242,7 +244,7 @@ def time_complete_forward(
         "gnn_and_head": finished - encode_finished,
     }
     del output, candidate
-    return timings, output_snapshot
+    return timings, output_snapshot, len(prepared[0])
 
 
 def compare_outputs(reference, candidate, rtol, atol):
@@ -270,6 +272,8 @@ def benchmark_batch(batch, model, device, args, batch_index):
     batch = batch.to(device, non_blocking=device.type == "cuda")
     node_texts = as_text_list(batch.x)
     edge_texts = as_text_list(batch.edge_attr)
+    num_graphs = getattr(batch, "num_graphs", None)
+    graph_count = int(num_graphs) if num_graphs is not None else 1
     if not node_texts and not edge_texts:
         raise ValueError("Cannot benchmark an empty text batch")
 
@@ -284,6 +288,7 @@ def benchmark_batch(batch, model, device, args, batch_index):
         path_names.insert(0, "fixed_width_numpy")
     samples = {name: [] for name in path_names}
     outputs = {}
+    unique_text_counts = set()
     for repeat_index in range(args.repeats):
         shift = (batch_index + repeat_index) % len(path_names)
         order = path_names[shift:] + path_names[:shift]
@@ -305,7 +310,7 @@ def benchmark_batch(batch, model, device, args, batch_index):
                 "edges": path_inputs[1],
                 "prepare": prepare,
             }
-            timings, output = time_complete_forward(
+            timings, output, unique_text_count = time_complete_forward(
                 model,
                 batch,
                 path,
@@ -315,6 +320,7 @@ def benchmark_batch(batch, model, device, args, batch_index):
                 validate_mapping=name not in outputs,
             )
             samples[name].append(timings)
+            unique_text_counts.add(unique_text_count)
             outputs.setdefault(name, output)
             if outputs[name] is not output:
                 del output
@@ -338,11 +344,23 @@ def benchmark_batch(batch, model, device, args, batch_index):
         raise RuntimeError(
             f"Forward outputs differ for batch {batch_index}: {correctness}"
         )
+    if len(unique_text_counts) != 1:
+        raise RuntimeError(
+            f"Text paths produced different unique counts for batch {batch_index}: "
+            f"{sorted(unique_text_counts)}"
+        )
 
     return {
         "medians": medians,
         "correctness": correctness,
         "fixed_width": fixed_report,
+        "workload": {
+            "graph_count": graph_count,
+            "node_count": len(node_texts),
+            "edge_count": len(edge_texts),
+            "text_count": len(node_texts) + len(edge_texts),
+            "unique_text_count": unique_text_counts.pop(),
+        },
     }
 
 
@@ -367,6 +385,25 @@ def ratio(reference, candidate):
     if reference is None or candidate is None or candidate <= 0:
         return None
     return reference / candidate
+
+
+def summarize_batch_workloads(batch_reports):
+    fields = (
+        "graph_count",
+        "node_count",
+        "edge_count",
+        "text_count",
+        "unique_text_count",
+    )
+    summary = {}
+    for field in fields:
+        values = [report["workload"][field] for report in batch_reports]
+        summary[field] = {
+            "min": min(values),
+            "mean": sum(values) / len(values),
+            "max": max(values),
+        }
+    return summary
 
 
 def aggregate(batch_reports):
@@ -495,6 +532,7 @@ def main():
             "rtol": args.rtol,
             "atol": args.atol,
         },
+        "batch_workload": summarize_batch_workloads(reports),
         "seconds_per_batch": seconds_per_batch,
         "result": result,
         "outputs_match": outputs_match,

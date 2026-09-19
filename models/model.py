@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -503,11 +505,35 @@ class EagerSentenceEncoder:
         return g
 
     def _encode_graph_texts(self, g):
+        device = next(self.llm_model.parameters()).device
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+        started = time.perf_counter()
         unique_texts, text_mapping, num_nodes = self._prepare_graph_texts(g)
+        prepare_ms = (time.perf_counter() - started) * 1000
+
+        started = time.perf_counter()
         text_features = self._encode_texts(unique_texts)
-        return self._restore_graph_text_features(
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        encode_ms = (time.perf_counter() - started) * 1000
+
+        started = time.perf_counter()
+        g = self._restore_graph_text_features(
             g, text_features, text_mapping, num_nodes
         )
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        restore_ms = (time.perf_counter() - started) * 1000
+
+        print(
+            "[encode_timing] "
+            f"_prepare_graph_texts={prepare_ms:.3f} ms, "
+            f"_encode_texts={encode_ms:.3f} ms, "
+            f"_restore_graph_text_features={restore_ms:.3f} ms"
+        )
+        return g
 
     def forward(self, g):
         g = self._encode_graph_texts(g)

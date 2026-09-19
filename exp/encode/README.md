@@ -41,6 +41,30 @@
 
 每个 batch 的每条路径运行 `--repeats` 次，按 `total` 排序后取中间一次；当重复次数为偶数时，对中间两次的各阶段取平均。这样选出的代表值仍满足 `total = encode + gnn_and_head`。三条路径会轮换执行顺序，减少 CUDA 预热、CPU cache 和运行顺序造成的偏差。脚本还会检查 mapping 能否还原原始 node/edge 文本，并验证最终预测满足 `torch.allclose`。
 
+## Encode 细粒度打印
+
+`models/model.py` 的 `_encode_graph_texts()` 会为每次调用打印一行细粒度耗时，单位为毫秒：
+
+```text
+[encode_timing] _prepare_graph_texts=1.234 ms, _encode_texts=52.317 ms, _restore_graph_text_features=0.428 ms
+```
+
+三个字段分别表示：
+
+- `_prepare_graph_texts`：整理 node/edge 文本、去重并生成 embedding mapping；在本 benchmark 中对应当前被测路径的 NumPy 或 Python hash 实现；
+- `_encode_texts`：Tokenizer、token tensor 搬运、Transformer 前向、pooling，以及多个 text batch 输出的拼接；
+- `_restore_graph_text_features`：embedding dtype 转换、mapping tensor 构造、索引恢复，以及 node/edge feature 拆分。
+
+CUDA kernel 是异步执行的。为避免只量到 kernel 提交时间，细粒度计时会在开始前、`_encode_texts` 后和 `_restore_graph_text_features` 后调用 `torch.cuda.synchronize()`。因此它属于侵入式诊断：同步和 `print` 会影响原本的异步执行与端到端吞吐。它适合判断 encode 内部时间花在哪里，但不要把启用这段打印后的绝对时间直接与旧的未插桩日志比较；不同文本路径之间则应保持相同插桩条件。
+
+warmup 和正式测量都会触发打印。固定宽度路径启用时，每个正式 batch 会打印 `3 × --repeats` 行，另外还有 `--warmup-batches` 产生的 production/Python-hash 路径打印。三条正式路径会轮换执行顺序，因此日志行按实际执行顺序出现，并不是始终按照 fixed、object、hash 排列。
+
+标准输出重定向到日志后，可以只查看细粒度行：
+
+```bash
+rg '^\[encode_timing\]' outputs/encode_benchmark/*.log
+```
+
 ## 参数规则
 
 所有 benchmark 参数必须放在 `task_names` 前面。`task_names` 及其后面的内容由 `argparse.REMAINDER` 交给项目配置系统，例如：

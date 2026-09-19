@@ -1,92 +1,179 @@
-# NumPy 文本准备与 eager encode 验证
+# 三种文本表示的 Transformer-GNN 前向 Benchmark
 
-该实验只验证 PyG `g` 已经由 DataLoader 加载出来之后的文本处理，不运行 GNN、prediction head 或 metric，也不需要训练 checkpoint。
+`benchmark_loaded_g.py` 比较同一个 PyG batch 在三种原始文本处理路径下的完整 `model(g)` 前向耗时，并把它拆成文本编码和后续图模型两段：
 
-脚本在同一个 batch、同一个 Hugging Face 编码器上比较三层实现：
+- `fixed_width_numpy`：使用 `np.asarray(texts)` 让 NumPy 按当前 batch 隐式推断固定宽度 Unicode dtype，再执行 `np.concatenate + np.unique`；
+- `object_numpy`：使用 `dtype=object`，仍执行 `np.concatenate + np.unique`；
+- `python_hash`：使用 `dtype=object`，调用模型当前的 Python 字典去重实现。
 
-- `fixed_width_numpy`：把文本重建为 `<Umax>` 固定宽度数组，再执行 `np.concatenate + np.unique`，作为最基础旧实现 baseline；
-- `object_numpy`：保持 `dtype=object`，仍执行 `np.concatenate + np.unique`，只验证消除固定宽度对齐的收益；
-- `object_hash`：使用变长字符串列表和 Python 字典去重，继续验证替换 NumPy 排序去重的收益。
+脚本强制使用 `load_texts=True`，不需要在命令行重复指定。数据集提供原始文本，Tokenizer、Transformer、embedding 恢复、GNN 和 prediction head 都在 `model(g)` 内执行。
 
-两条路径分别报告：
+## 计时范围
 
-- 文本拼接、去重和 mapping 构造时间；
-- tokenizer CPU 时间；
-- token tensor 从 CPU 搬到 GPU 的时间；
-- LLM forward + pooling 时间；
-- encoder micro-batch 输出拼接时间。
+每条路径报告三个计时字段：
 
-脚本还会验证三条路径的唯一文本集合和 mapping 还原结果，并检查 `object_numpy`、`object_hash` 按文本对齐后的 embedding 是否满足 `torch.allclose`。固定宽度路径和 object NumPy 路径得到相同的排序唯一文本时，二者后续 tokenizer/LLM 输入完全一致，因此固定宽度 baseline 复用 object NumPy 的 encode 计时，不重复运行一次相同的编码。
+- `total`：完整 `model(g)` 端到端前向；
+- `encode`：文本准备与去重、Tokenizer、Transformer，以及 embedding mapping 恢复；
+- `gnn_and_head`：同一次前向的 `total - encode`，包含 LLM embedding 投影、可选 RWPE、GNN、可选 attention 和 prediction head。
 
-## WikiCS 单 batch
-
-从项目根目录执行：
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python exp/encode/benchmark_loaded_g.py \
-  --split test \
-  --loader-index 0 \
-  --batch-num 1 \
-  --batch-size 128 \
-  --fixed-width-mode auto \
-  --fixed-width-chars 116022 \
-  --fixed-width-limit-gib 8 \
-  --warmup-batches 1 \
-  --device cuda:0 \
-  task_names wikics \
-  llm_name ST \
-  llm_b_size 100 \
-  llm_max_length 500 \
-  num_workers 4
-```
-
-`--batch-num` 控制测量多少个已加载 batch。配置覆盖参数必须放在脚本参数之后，因为最后一段由 `argparse.REMAINDER` 传给项目配置系统。
-使用 `--batch-num -1` 可以测量所选 loader 的全部 batch。
-
-`--batch-size` 控制一个 PyG DataLoader batch 中的图样本数，并在构造 DataLoader 前覆盖 YAML 和末尾配置参数。例如 `--batch-size 1 --batch-num 1` 表示只测量一个仅含一个图样本的 batch。
-
-固定宽度 baseline 有三种执行模式：
-
-| 参数 | 行为 |
-|---|---|
-| `--fixed-width-mode estimate` | 只报告 `<Umax>` 数组大小和预计最低峰值，不实际分配 |
-| `--fixed-width-mode auto` | 预计最低峰值不超过 `--fixed-width-limit-gib` 时才实测，否则只报告估算 |
-| `--fixed-width-mode force` | 忽略内存阈值，强制构造固定宽度数组并运行 `np.unique` |
-
-WikiCS 的已知全局最大文本长度是 116,022 字符，因此使用 `--fixed-width-chars 116022` 可复现旧缓存的宽度。`force` 可能造成上百 GB 内存占用甚至被系统 OOM killer 终止，只应在确认服务器可用内存后运行：
-
-```bash
---fixed-width-mode force --fixed-width-chars 116022
-```
-
-不传 `--fixed-width-chars` 时，脚本使用当前 batch 内最长文本长度，这更适合 Cora/PubMed 的常规对照，但不一定等于旧全局缓存的 dtype 宽度。
-
-## Cora/PubMed 对照
-
-只需要替换任务名：
-
-```bash
-task_names cora_node
-task_names pubmed_node
-```
-
-## 结果解释
-
-所有 `*_over_*` speedup 大于 `1` 都表示分母路径更快。例如 `fixed_width_over_object_numpy_prepare=2.0` 表示固定宽度准备耗时是 object NumPy 的两倍。
-
-重点检查：
+因此完整流程是：
 
 ```text
-correctness.same_unique_texts
-correctness.object_numpy_mapping_restores_inputs
-correctness.object_hash_mapping_restores_inputs
-correctness.embeddings_allclose
+文本拼接与去重
+-> Tokenizer
+-> Transformer
+-> embedding mapping 恢复
+-> embedding 投影 / 可选 RWPE
+-> GNN
+-> 可选 attention
+-> prediction head
 ```
 
-这些字段都应为 `true`。如果 `embeddings_allclose=false`，需要结合 `embedding_max_abs_diff` 判断是浮点执行顺序差异还是功能错误。
+`gnn_and_head` 没有直接命名为 `gnn`，因为当前模型的 GNN 前后还有投影和预测头；把这部分统称为纯 GNN 时间会不准确。三个字段来自同一次完整前向，不会为了拆分计时额外执行模型。CUDA 测量会在完整前向开始、encode 结束边界和完整前向结束时同步，避免把异步 kernel 提交时间误当成实际计算时间。
 
-计时从 DataLoader 返回 `g` 后开始，因此不包含数据集初始化、磁盘读取、PyG collate 和模型加载。`node_array_shallow_bytes`/`edge_array_shallow_bytes` 对 object array 只统计引用数组本身，不包含 Python 字符串对象占用。
+计时开始前，batch 已经移动到目标设备，三种输入表示也已经构造完毕。因此结果不包含：
 
-固定宽度 baseline 从已经加载的 object 文本重新构造 `<Umax>`，因此能够比较数组物化、拼接和去重，但仍不包含磁盘读取旧 `.pt` 缓存和 PyG collate 的耗时。完整评估缓存加载阶段时，还应分别在 `main` 和 `feat/np-encode` 上记录缓存文件大小、DataLoader 首 batch 延迟和进程峰值 RSS。
+- 数据集初始化和磁盘读取；
+- 子图采样、DataLoader 和 PyG collate；
+- batch 到目标设备的搬运；
+- benchmark 为三条路径重建 NumPy 数组的时间；
+- metric 计算。
 
-单 batch 中两条路径的 LLM 执行顺序可能影响首轮 CUDA 开销。脚本会先 warmup，并在多 batch 测量时交替执行顺序。正式比较建议至少运行 5 个 batch，并重复执行整条命令。
+每个 batch 的每条路径运行 `--repeats` 次，按 `total` 排序后取中间一次；当重复次数为偶数时，对中间两次的各阶段取平均。这样选出的代表值仍满足 `total = encode + gnn_and_head`。三条路径会轮换执行顺序，减少 CUDA 预热、CPU cache 和运行顺序造成的偏差。脚本还会检查 mapping 能否还原原始 node/edge 文本，并验证最终预测满足 `torch.allclose`。
+
+## 参数规则
+
+所有 benchmark 参数必须放在 `task_names` 前面。`task_names` 及其后面的内容由 `argparse.REMAINDER` 交给项目配置系统，例如：
+
+```text
+--batch-size 128 --batch-num 5 ... task_names cora_node llm_name ST
+```
+
+常用参数：
+
+| 参数 | 含义 |
+|---|---|
+| `--batch-size N` | 一个 PyG batch 包含的图/目标边样本数 |
+| `--batch-num N` | 正式测量前 N 个 batch；`-1` 表示全部 |
+| `--repeats N` | 每个 batch、每条路径的重复次数，默认 3 |
+| `--warmup-batches N` | 正式计时前运行的预热 batch 数 |
+| `--split train\|val\|test` | 选择 DataLoader split |
+| `--loader-index N` | val/test loader 列表中的索引；train 只能为 0 |
+| `--device auto\|cpu\|cuda:N` | 推理设备 |
+| `--fixed-width-mode estimate\|auto\|force` | 固定宽度路径的内存策略 |
+| `--fixed-width-limit-gib N` | `auto` 模式允许的估算峰值上限 |
+| `task_names NAME` | 要加载的项目任务名，例如节点任务 `cora_node` 或 E2E link 任务 `cora_link`；必须写在所有 `--...` benchmark 参数之后 |
+
+固定宽度模式：
+
+- `estimate`：只做内存估算，不执行 `fixed_width_numpy`；
+- `auto`：估算峰值未超过配置上限和一半可用内存时才执行；
+- `force`：忽略内存保护并强制执行，可能导致 OOM。
+
+## Cora 节点任务
+
+下面的命令测量 5 个 test batch，每个 batch 包含 128 个节点分类子图样本：
+
+```powershell
+python exp/encode/benchmark_loaded_g.py --split test --loader-index 0 --batch-size 128 --batch-num 5 --repeats 3 --warmup-batches 1 --device cuda:0 --fixed-width-mode auto --fixed-width-limit-gib 4 task_names cora_node llm_name ST llm_b_size 100 llm_max_length 500
+```
+
+其他节点任务只需替换任务名：
+
+```text
+cora_node
+pubmed_node
+wikics
+arxiv
+```
+
+## E2E Link 任务
+
+脚本支持 `task_level: e2e_link`。在 link 任务中，`--batch-size` 表示一个 batch 包含多少个目标边对应的子图样本。由于本脚本不计 DataLoader 时间，link 子图采样和 collate 不在报告中，报告的是这些 batch 的完整 Transformer-GNN 前向时间。
+
+### Cora Link
+
+```powershell
+python exp/encode/benchmark_loaded_g.py --split test --loader-index 0 --batch-size 32 --batch-num 5 --repeats 3 --warmup-batches 1 --device cuda:0 --fixed-width-mode auto --fixed-width-limit-gib 4 task_names cora_link llm_name ST llm_b_size 100 llm_max_length 500
+```
+
+对于 `cora_link`：
+
+- `--split test --loader-index 0`：link test split；
+- `--split test --loader-index 1`：配置到 test 阶段的 link train split；
+- `--split val --loader-index 0`：link validation split；
+- `--split val --loader-index 1`：Cora node validation，不是 link validation。
+
+### PubMed Link
+
+```powershell
+python exp/encode/benchmark_loaded_g.py --split test --loader-index 0 --batch-size 32 --batch-num 5 --repeats 3 --warmup-batches 1 --device cuda:0 --fixed-width-mode auto --fixed-width-limit-gib 4 task_names pubmed_link llm_name ST llm_b_size 100 llm_max_length 500
+```
+
+### WN18RR Link
+
+```powershell
+python exp/encode/benchmark_loaded_g.py --split test --loader-index 0 --batch-size 32 --batch-num 5 --repeats 3 --warmup-batches 1 --device cuda:0 --fixed-width-mode auto --fixed-width-limit-gib 4 task_names WN18RR llm_name ST llm_b_size 100 llm_max_length 500
+```
+
+### FB15K237 Link
+
+```powershell
+python exp/encode/benchmark_loaded_g.py --split test --loader-index 0 --batch-size 32 --batch-num 5 --repeats 3 --warmup-batches 1 --device cuda:0 --fixed-width-mode auto --fixed-width-limit-gib 4 task_names FB15K237 llm_name ST llm_b_size 100 llm_max_length 500
+```
+
+可用的主要 E2E Link 任务名：
+
+```text
+cora_link
+pubmed_link
+WN18RR
+FB15K237
+```
+
+## 输出解释
+
+最终 JSON 的核心字段如下：
+
+```json
+{
+  "seconds_per_batch": {
+    "fixed_width_numpy": {
+      "total": 2.41,
+      "encode": 2.08,
+      "gnn_and_head": 0.33
+    },
+    "object_numpy": {
+      "total": 1.87,
+      "encode": 1.54,
+      "gnn_and_head": 0.33
+    },
+    "python_hash": {
+      "total": 1.72,
+      "encode": 1.39,
+      "gnn_and_head": 0.33
+    }
+  },
+  "result": {
+    "fastest_path": "python_hash",
+    "object_numpy_faster_than_fixed_width": true,
+    "python_hash_faster_than_fixed_width": true,
+    "python_hash_faster_than_object_numpy": true
+  },
+  "outputs_match": true
+}
+```
+
+- `seconds_per_batch` 中每个阶段都是各 batch 代表耗时的平均值；
+- `result.fastest_path`、`*_faster_than_*` 和 `*_speedup_vs_*` 都只比较端到端 `total`；
+- `*_speedup_vs_* > 1` 表示字段名前面的路径更快；
+- `outputs_match` 必须为 `true`；mapping 不正确或最终输出不一致时脚本会直接报错；
+- 固定宽度路径被内存保护跳过时，其时间和相关比较为 `null`，原因记录在 `fixed_width.skip_reasons`。
+
+## Raw Cache 注意事项
+
+`load_texts=True` 时，Cora 使用 `cache_data/Cora/raw/processed/`。缓存不存在时，首次构造会调用 `SingleGraphOFADataset.add_raw_texts()`，将五组文本保存为 `dtype=object`；缓存完整时则直接加载，不会再次执行 `add_raw_texts()`。
+
+如果该目录来自 main 分支的旧固定宽度缓存，当前分支不会自动重新生成。当前 `OFA_collater` 会把最终 batch 转成 object array，但旧缓存造成的数据集常驻内存、采样和 prompt 拼接开销发生在 DataLoader 返回之前，不属于本 benchmark 的计时范围。
+
+`fixed_width_numpy` 是从当前 batch 文本通过 `np.asarray(texts)` 隐式推断出的固定宽度对照。当前 object batch 已经丢失 main 旧缓存的全局 dtype 宽度，因此它不是旧 main 缓存布局的逐字节复刻。

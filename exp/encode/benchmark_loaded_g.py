@@ -1,73 +1,53 @@
-"""Compare NumPy and hash-based text preparation after a PyG batch is loaded."""
+"""Compare model-forward timing phases for three raw-text representations."""
 
 import argparse
+import copy
 import gc
-import hashlib
 import json
 import os
 import sys
 import time
+from contextlib import contextmanager
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
 import torch
 
-"""
-DataLoader -> batch(g)
-    |-> fixed_width_numpy: reconstruct <Umax>, concatenate, unique
-    |-> object_numpy: existing object array, concatenate, unique
-    `-> object_hash: variable-length strings, hash deduplication
-
-The two executable encode paths are aligned by text and checked for numerical
-equivalence. fixed_width_numpy reuses object_numpy's encode timing only when
-their sorted unique-text digests match.
-"""
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TIMING_UTILS_DIR = PROJECT_ROOT / "exp" / "time_pipe" / "encode-gnn"
-sys.path.insert(0, str(TIMING_UTILS_DIR))
-sys.path.insert(0, str(PROJECT_ROOT))
-os.chdir(PROJECT_ROOT)
-
-import timing_utils as utils
+GIB = 1024**3
+RTOL = 1e-4
+ATOL = 1e-5
+TIMING_PHASES = ("total", "encode", "gnn_and_head")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Compare text preparation and encoder inference paths after a PyG "
-            "batch has already been loaded"
+            "Compare fixed-width NumPy, object NumPy, and Python-hash paths "
+            "using total, text-encoding, and downstream model-forward time"
         )
     )
     parser.add_argument("--override", type=str, help="YAML override, as in run_cdm.py")
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--loader-index", type=int, default=0)
     parser.add_argument("--batch-num", type=int, default=1)
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        help="PyG graphs per DataLoader batch; overrides YAML/config opts",
-    )
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmup-batches", type=int, default=1)
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--rtol", type=float, default=1e-4)
-    parser.add_argument("--atol", type=float, default=1e-5)
     parser.add_argument(
         "--fixed-width-mode",
         choices=("estimate", "auto", "force"),
         default="auto",
-        help="Estimate, safely run, or force the fixed-width NumPy baseline",
-    )
-    parser.add_argument(
-        "--fixed-width-chars",
-        type=int,
-        help="Unicode width for the baseline; defaults to the longest text in the batch",
     )
     parser.add_argument(
         "--fixed-width-limit-gib",
         type=float,
-        default=8.0,
-        help="auto mode skips allocation above this estimated minimum peak memory",
+        default=4.0,
+        help="auto mode skips the fixed-width path above this memory guard",
     )
     parser.add_argument(
         "opts",
@@ -75,123 +55,28 @@ def parse_args():
         nargs=argparse.REMAINDER,
         help="Config key/value overrides, matching run_cdm.py",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.batch_num == 0 or args.batch_num < -1:
+        parser.error("--batch-num must be positive or -1")
+    if args.batch_size is not None and args.batch_size <= 0:
+        parser.error("--batch-size must be positive")
+    if args.repeats <= 0:
+        parser.error("--repeats must be positive")
+    if args.warmup_batches < 0:
+        parser.error("--warmup-batches must be non-negative")
+    if args.fixed_width_limit_gib <= 0:
+        parser.error("--fixed-width-limit-gib must be positive")
+    return args
 
 
-def _as_text(value):
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    if isinstance(value, str):
-        return value
-    raise TypeError(f"Expected raw text, got {type(value).__name__}")
+def load_timing_utils():
+    os.chdir(PROJECT_ROOT)
+    for path in (str(PROJECT_ROOT), str(TIMING_UTILS_DIR)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    import timing_utils
 
-
-def _as_text_list(values):
-    array = np.asarray(values)
-    return [_as_text(value) for value in array.reshape(-1).tolist()]
-
-
-def prepare_numpy(g):
-    """Run concatenate + sorted unique on the batch's existing array dtype."""
-    node_texts = np.asarray(g.x).reshape(-1)
-    edge_texts = np.asarray(g.edge_attr).reshape(-1)
-    text_inputs = np.concatenate((node_texts, edge_texts), axis=0)
-    unique_texts, text_mapping = np.unique(text_inputs, return_inverse=True)
-    return unique_texts, text_mapping, text_inputs
-
-
-def _text_digest(texts):
-    digest = hashlib.sha256()
-    for value in texts:
-        encoded = _as_text(value).encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, byteorder="little"))
-        digest.update(encoded)
-    return digest.hexdigest()
-
-
-def run_fixed_width_baseline(g, mode, width_override, limit_gib):
-    """Materialize the old <Umax> representation when the memory policy permits."""
-    node_texts = _as_text_list(g.x)
-    edge_texts = _as_text_list(g.edge_attr)
-    text_count = len(node_texts) + len(edge_texts)
-    max_text_chars = max(map(len, node_texts + edge_texts))
-    width_chars = width_override if width_override is not None else max_text_chars
-    if width_chars <= 0:
-        raise ValueError("fixed_width_chars must be a positive integer")
-    if width_chars < max_text_chars:
-        raise ValueError(
-            f"fixed_width_chars={width_chars} would truncate a {max_text_chars}-character text"
-        )
-    if limit_gib <= 0:
-        raise ValueError("fixed_width_limit_gib must be positive")
-
-    unicode_dtype = np.dtype(f"<U{width_chars}")
-    combined_bytes = text_count * unicode_dtype.itemsize
-    # node/edge arrays + concatenated input + worst-case unique output + inverse mapping.
-    minimum_peak_bytes = 3 * combined_bytes + text_count * np.dtype(np.int64).itemsize
-    limit_bytes = int(limit_gib * 1024 ** 3)
-    report = {
-        "status": "estimated_only",
-        "unicode_dtype": str(unicode_dtype),
-        "unicode_width_characters": width_chars,
-        "text_count": text_count,
-        "combined_array_bytes": combined_bytes,
-        "combined_array_gib": combined_bytes / 1024 ** 3,
-        "estimated_minimum_peak_bytes": minimum_peak_bytes,
-        "estimated_minimum_peak_gib": minimum_peak_bytes / 1024 ** 3,
-        "memory_limit_gib": limit_gib,
-        "prepare_seconds": None,
-        "unique_text_count": None,
-        "mapping_restores_inputs": None,
-    }
-
-    if mode == "estimate":
-        report["skip_reason"] = "fixed_width_mode=estimate"
-        return report
-    if mode == "auto" and minimum_peak_bytes > limit_bytes:
-        report["skip_reason"] = "estimated minimum peak exceeds fixed_width_limit_gib"
-        return report
-
-    started = time.perf_counter()
-    node_array = np.asarray(node_texts, dtype=unicode_dtype)
-    edge_array = np.asarray(edge_texts, dtype=unicode_dtype)
-    text_inputs = np.concatenate((node_array, edge_array), axis=0)
-    unique_texts, text_mapping = np.unique(text_inputs, return_inverse=True)
-    prepare_seconds = time.perf_counter() - started
-
-    report.update(
-        {
-            "status": "measured",
-            "prepare_seconds": prepare_seconds,
-            "unique_text_count": len(unique_texts),
-            "unique_text_digest": _text_digest(unique_texts),
-            "mapping_restores_inputs": mapping_restores_inputs(
-                unique_texts, text_mapping, text_inputs
-            ),
-        }
-    )
-    del node_array, edge_array, text_inputs, unique_texts, text_mapping
-    gc.collect()
-    return report
-
-
-def prepare_hash(g):
-    """Deduplicate variable-length strings in first-occurrence order."""
-    node_texts = _as_text_list(g.x)
-    edge_texts = _as_text_list(g.edge_attr)
-    unique_texts = []
-    text_mapping = []
-    text_to_index = {}
-
-    for texts in (node_texts, edge_texts):
-        for text in texts:
-            text_index = text_to_index.get(text)
-            if text_index is None:
-                text_index = len(unique_texts)
-                text_to_index[text] = text_index
-                unique_texts.append(text)
-            text_mapping.append(text_index)
-    return unique_texts, text_mapping, node_texts, edge_texts
+    return timing_utils
 
 
 def synchronize(device):
@@ -199,326 +84,415 @@ def synchronize(device):
         torch.cuda.synchronize(device)
 
 
-def encode_unique_texts(model, texts, device):
-    """Run the production tokenizer/encoder operations with separate timers."""
-    text_batch_size = model.text_batch_size if model.text_batch_size > 0 else len(texts)
-    if not texts:
-        raise ValueError("Cannot encode an empty text batch")
+def as_text(value):
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    outputs = []
-    tokenizer_seconds = 0.0
-    host_to_device_seconds = 0.0
-    llm_forward_seconds = 0.0
 
-    for start in range(0, len(texts), text_batch_size):
-        text_batch = texts[start:start + text_batch_size]
+def as_text_list(values):
+    array = np.asarray(values).reshape(-1)
+    return [as_text(value) for value in array.tolist()]
 
-        started = time.perf_counter()
-        if not isinstance(text_batch, list):
-            text_batch = text_batch.tolist()
-        token_batch = model.llm_model.tokenizer(
-            text_batch,
-            return_tensors="pt",
-            padding="longest",
-            truncation=True,
-            max_length=model.llm_model.max_length,
-        )
-        tokenizer_seconds += time.perf_counter() - started
 
+def prepare_numpy(graph):
+    node_texts = np.asarray(graph.x).reshape(-1)
+    edge_texts = np.asarray(graph.edge_attr).reshape(-1)
+    text_inputs = np.concatenate((node_texts, edge_texts), axis=0)
+    if text_inputs.size == 0:
+        raise ValueError("Cannot benchmark an empty text batch")
+    unique_texts, mapping = np.unique(text_inputs, return_inverse=True)
+    return unique_texts, mapping, len(node_texts)
+
+
+def available_memory_bytes():
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return int(psutil.virtual_memory().available)
+
+
+def plan_fixed_width_inputs(node_texts, edge_texts, args):
+    longest_node = max(node_texts, key=len, default="")
+    longest_edge = max(edge_texts, key=len, default="")
+    node_itemsize = np.asarray([longest_node]).itemsize
+    edge_itemsize = np.asarray([longest_edge]).itemsize
+    combined_itemsize = np.asarray([longest_node, longest_edge]).itemsize
+    text_count = len(node_texts) + len(edge_texts)
+    input_bytes = len(node_texts) * node_itemsize + len(edge_texts) * edge_itemsize
+    combined_bytes = text_count * combined_itemsize
+    inverse_bytes = text_count * np.dtype(np.int64).itemsize
+    # Inputs plus concatenate/unique outputs and conservative NumPy work arrays.
+    guard_bytes = input_bytes + 4 * combined_bytes + 4 * inverse_bytes
+    configured_limit = int(args.fixed_width_limit_gib * GIB)
+    available = available_memory_bytes()
+    effective_limit = configured_limit
+    if available is not None:
+        effective_limit = min(effective_limit, int(available * 0.5))
+
+    report = {
+        "status": "estimated_only",
+        "input_gib": input_bytes / GIB,
+        "guard_gib": guard_bytes / GIB,
+    }
+    if args.fixed_width_mode == "estimate":
+        report["skip_reason"] = "fixed_width_mode=estimate"
+        return False, report
+    if args.fixed_width_mode == "auto" and guard_bytes > effective_limit:
+        report["skip_reason"] = "memory guard exceeds configured/available budget"
+        return False, report
+
+    report["status"] = "measured"
+    return True, report
+
+
+def materialize_fixed_width_inputs(node_texts, edge_texts, report):
+    node_inputs = np.asarray(node_texts) if node_texts else np.asarray([], dtype=str)
+    edge_inputs = np.asarray(edge_texts) if edge_texts else np.asarray([], dtype=str)
+    for name, values in (("node", node_inputs), ("edge", edge_inputs)):
+        if values.size and values.dtype.kind not in {"U", "S"}:
+            raise TypeError(f"NumPy did not infer a string dtype for {name} texts")
+    report.setdefault("node_dtype", str(node_inputs.dtype))
+    report.setdefault("edge_dtype", str(edge_inputs.dtype))
+    return node_inputs, edge_inputs
+
+
+@contextmanager
+def model_method_override(model, method_name, callback):
+    had_override = method_name in model.__dict__
+    previous = model.__dict__.get(method_name)
+    setattr(model, method_name, callback)
+    try:
+        yield
+    finally:
+        if had_override:
+            setattr(model, method_name, previous)
+        else:
+            delattr(model, method_name)
+
+
+def isolated_batch(batch, node_values, edge_values):
+    candidate = copy.copy(batch)
+    candidate.x = node_values
+    candidate.edge_attr = edge_values
+    return candidate
+
+
+def validate_text_mapping(prepared, node_texts, edge_texts):
+    if prepared is None:
+        raise RuntimeError("Model forward did not prepare graph texts")
+    unique_texts, mapping, num_nodes = prepared
+    expected_count = len(node_texts) + len(edge_texts)
+    if num_nodes != len(node_texts) or len(mapping) != expected_count:
+        raise RuntimeError("Text mapping has the wrong node or total length")
+
+    position = 0
+    for expected_texts in (node_texts, edge_texts):
+        for expected in expected_texts:
+            actual = as_text(unique_texts[int(mapping[position])])
+            if actual != expected:
+                raise RuntimeError(
+                    f"Text mapping does not restore input at position {position}"
+                )
+            position += 1
+
+
+def time_complete_forward(
+    model, batch, path, device, node_texts, edge_texts, validate_mapping
+):
+    candidate = isolated_batch(batch, path["nodes"], path["edges"])
+    prepared = None
+    encode_finished = None
+    prepare = path["prepare"]
+    encode_graph_texts = model._encode_graph_texts
+
+    def capture_preparation(graph):
+        nonlocal prepared
+        prepared = prepare(graph)
+        return prepared
+
+    def timed_encode(graph):
+        nonlocal encode_finished
+        encoded_graph = encode_graph_texts(graph)
+        synchronize(device)
+        encode_finished = time.perf_counter()
+        return encoded_graph
+
+    with model_method_override(
+        model, "_prepare_graph_texts", capture_preparation
+    ), model_method_override(model, "_encode_graph_texts", timed_encode):
         synchronize(device)
         started = time.perf_counter()
-        token_batch = {key: value.to(device) for key, value in token_batch.items()}
+        output = model(candidate)
         synchronize(device)
-        host_to_device_seconds += time.perf_counter() - started
+        finished = time.perf_counter()
+    if not torch.is_tensor(output):
+        raise TypeError("Expected model(g) to return a Tensor")
+    if encode_finished is None:
+        raise RuntimeError("Model forward did not execute _encode_graph_texts")
+    output_snapshot = output.detach().cpu()
+    if validate_mapping:
+        validate_text_mapping(prepared, node_texts, edge_texts)
+    timings = {
+        "total": finished - started,
+        "encode": encode_finished - started,
+        "gnn_and_head": finished - encode_finished,
+    }
+    del output, candidate
+    return timings, output_snapshot
 
-        started = time.perf_counter()
-        output, _ = model.llm_model.encode(token_batch, pooling=True)
-        synchronize(device)
-        llm_forward_seconds += time.perf_counter() - started
-        outputs.append(output)
 
-    started = time.perf_counter()
-    features = torch.cat(outputs, dim=0)
-    synchronize(device)
-    output_concat_seconds = time.perf_counter() - started
-    return features, {
-        "tokenizer_seconds": tokenizer_seconds,
-        "host_to_device_seconds": host_to_device_seconds,
-        "llm_forward_seconds": llm_forward_seconds,
-        "output_concat_seconds": output_concat_seconds,
-        "encode_total_seconds": (
-            tokenizer_seconds
-            + host_to_device_seconds
-            + llm_forward_seconds
-            + output_concat_seconds
-        ),
-        "encoder_micro_batches": (len(texts) + text_batch_size - 1) // text_batch_size,
+def compare_outputs(reference, candidate):
+    if reference.shape != candidate.shape:
+        return {"allclose": False, "max_abs_diff": None}
+    difference = (reference - candidate).abs()
+    return {
+        "allclose": bool(torch.allclose(reference, candidate, rtol=RTOL, atol=ATOL)),
+        "max_abs_diff": float(difference.max().item()) if difference.numel() else 0.0,
     }
 
 
-def mapping_restores_inputs(unique_texts, text_mapping, text_inputs):
-    if len(text_mapping) != len(text_inputs):
-        return False
-    return all(
-        _as_text(unique_texts[int(text_index)]) == _as_text(text)
-        for text_index, text in zip(text_mapping, text_inputs)
-    )
-
-
-def compare_features(
-    numpy_texts,
-    numpy_features,
-    hash_texts,
-    hash_features,
-    rtol,
-    atol,
-):
-    numpy_texts = _as_text_list(numpy_texts)
-    hash_texts = _as_text_list(hash_texts)
-    hash_indices = {text: index for index, text in enumerate(hash_texts)}
-    if set(numpy_texts) != set(hash_texts):
-        return {"same_unique_texts": False, "embeddings_allclose": False}
-
-    alignment = torch.as_tensor(
-        [hash_indices[text] for text in numpy_texts],
-        dtype=torch.long,
-        device=hash_features.device,
-    )
-    aligned_hash_features = hash_features.index_select(0, alignment)
-    difference = (numpy_features - aligned_hash_features).abs()
+def representative_timings(samples):
+    ordered = sorted(samples, key=lambda sample: sample["total"])
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
     return {
-        "same_unique_texts": True,
-        "embeddings_allclose": bool(
-            torch.allclose(
-                numpy_features,
-                aligned_hash_features,
-                rtol=rtol,
-                atol=atol,
+        phase: (ordered[middle - 1][phase] + ordered[middle][phase]) / 2
+        for phase in TIMING_PHASES
+    }
+
+
+def benchmark_batch(batch, model, device, args, batch_index):
+    batch = batch.to(device, non_blocking=device.type == "cuda")
+    node_texts = as_text_list(batch.x)
+    edge_texts = as_text_list(batch.edge_attr)
+    if not node_texts and not edge_texts:
+        raise ValueError("Cannot benchmark an empty text batch")
+
+    fixed_enabled, fixed_report = plan_fixed_width_inputs(node_texts, edge_texts, args)
+
+    object_paths = {
+        "object_numpy": prepare_numpy,
+        "python_hash": model._prepare_graph_texts,
+    }
+    path_names = list(object_paths)
+    if fixed_enabled:
+        path_names.insert(0, "fixed_width_numpy")
+    samples = {name: [] for name in path_names}
+    outputs = {}
+    for repeat_index in range(args.repeats):
+        shift = (batch_index + repeat_index) % len(path_names)
+        order = path_names[shift:] + path_names[:shift]
+        for name in order:
+            gc.collect()
+            if name == "fixed_width_numpy":
+                path_inputs = materialize_fixed_width_inputs(
+                    node_texts, edge_texts, fixed_report
+                )
+                prepare = prepare_numpy
+            else:
+                path_inputs = (
+                    np.asarray(node_texts, dtype=object),
+                    np.asarray(edge_texts, dtype=object),
+                )
+                prepare = object_paths[name]
+            path = {
+                "nodes": path_inputs[0],
+                "edges": path_inputs[1],
+                "prepare": prepare,
+            }
+            timings, output = time_complete_forward(
+                model,
+                batch,
+                path,
+                device,
+                node_texts,
+                edge_texts,
+                validate_mapping=name not in outputs,
             )
-        ),
-        "embedding_max_abs_diff": float(difference.max().item()),
-        "embedding_mean_abs_diff": float(difference.mean().item()),
+            samples[name].append(timings)
+            outputs.setdefault(name, output)
+            if outputs[name] is not output:
+                del output
+            del path, path_inputs
+            gc.collect()
+
+    medians = {
+        name: representative_timings(path_samples)
+        for name, path_samples in samples.items()
+    }
+    correctness = {
+        "object_numpy_vs_python_hash": compare_outputs(
+            outputs["object_numpy"], outputs["python_hash"]
+        )
+    }
+    if "fixed_width_numpy" in outputs:
+        correctness["fixed_width_vs_object_numpy"] = compare_outputs(
+            outputs["fixed_width_numpy"], outputs["object_numpy"]
+        )
+    if not all(check["allclose"] for check in correctness.values()):
+        raise RuntimeError(
+            f"Forward outputs differ for batch {batch_index}: {correctness}"
+        )
+
+    return {
+        "medians": medians,
+        "correctness": correctness,
+        "fixed_width": fixed_report,
     }
 
 
 def warmup(loader, model, device, warmup_batches):
     if warmup_batches == 0:
-        return
+        return 0
+    completed = 0
     with torch.inference_mode():
-        for batch_index, batch in enumerate(loader):
-            if batch_index >= warmup_batches:
-                break
-            unique_texts, _, _, _ = prepare_hash(batch)
-            sample_size = model.text_batch_size if model.text_batch_size > 0 else len(unique_texts)
-            model._encode_texts(unique_texts[:sample_size])
+        for batch in islice(loader, warmup_batches):
+            batch = batch.to(device, non_blocking=device.type == "cuda")
+            node_texts = np.asarray(as_text_list(batch.x), dtype=object)
+            edge_texts = np.asarray(as_text_list(batch.edge_attr), dtype=object)
+            candidate = isolated_batch(batch, node_texts, edge_texts)
+            model(candidate)
+            del candidate
+            completed += 1
     synchronize(device)
+    return completed
 
 
-def _ratio(numerator, denominator):
-    return numerator / denominator if denominator > 0 else None
+def ratio(reference, candidate):
+    if reference is None or candidate is None or candidate <= 0:
+        return None
+    return reference / candidate
 
-"""
-python exp/encode/benchmark_loaded_g.py \
-  --batch-num 1 \
-  --batch-size 10 \
-  --device cuda:0 \
-  task_names wikics \
-  llm_name ST \
-  llm_b_size 100
 
-"""
+def aggregate(batch_reports):
+    measured_batches = len(batch_reports)
+    names = ("fixed_width_numpy", "object_numpy", "python_hash")
+    totals = {name: {} for name in names}
+    for name in names:
+        for phase in TIMING_PHASES:
+            values = [
+                report["medians"].get(name, {}).get(phase) for report in batch_reports
+            ]
+            totals[name][phase] = (
+                sum(values) if all(value is not None for value in values) else None
+            )
+
+    measured = {
+        name: phases["total"]
+        for name, phases in totals.items()
+        if phases["total"] is not None
+    }
+    fastest = min(measured, key=measured.get)
+    fixed_seconds = totals["fixed_width_numpy"]["total"]
+    object_seconds = totals["object_numpy"]["total"]
+    python_seconds = totals["python_hash"]["total"]
+    seconds_per_batch = {
+        name: {
+            phase: total / measured_batches if total is not None else None
+            for phase, total in phases.items()
+        }
+        for name, phases in totals.items()
+    }
+    result = {
+        "fastest_path": fastest,
+        "object_numpy_faster_than_fixed_width": (
+            object_seconds < fixed_seconds if fixed_seconds is not None else None
+        ),
+        "python_hash_faster_than_fixed_width": (
+            python_seconds < fixed_seconds if fixed_seconds is not None else None
+        ),
+        "python_hash_faster_than_object_numpy": python_seconds < object_seconds,
+        "object_numpy_speedup_vs_fixed_width": ratio(fixed_seconds, object_seconds),
+        "python_hash_speedup_vs_fixed_width": ratio(fixed_seconds, python_seconds),
+        "python_hash_speedup_vs_object_numpy": ratio(object_seconds, python_seconds),
+    }
+    outputs_match = all(
+        check["allclose"]
+        for report in batch_reports
+        for check in report["correctness"].values()
+    )
+    fixed_reports = [report["fixed_width"] for report in batch_reports]
+    fixed_statuses = {report["status"] for report in fixed_reports}
+    if fixed_statuses == {"measured"}:
+        fixed_status = "measured"
+    elif fixed_statuses == {"estimated_only"}:
+        fixed_status = "estimated_only"
+    else:
+        fixed_status = "partially_measured"
+    fixed_width = {
+        "status": fixed_status,
+        "measured_batches": sum(
+            report["status"] == "measured" for report in fixed_reports
+        ),
+        "max_input_gib": max(report["input_gib"] for report in fixed_reports),
+        "max_estimated_peak_gib": max(report["guard_gib"] for report in fixed_reports),
+    }
+    materialized_reports = [
+        report for report in fixed_reports if "node_dtype" in report
+    ]
+    if materialized_reports:
+        fixed_width["inferred_node_dtypes"] = sorted(
+            {report["node_dtype"] for report in materialized_reports}
+        )
+        fixed_width["inferred_edge_dtypes"] = sorted(
+            {report["edge_dtype"] for report in materialized_reports}
+        )
+    skip_reasons = sorted(
+        {report["skip_reason"] for report in fixed_reports if "skip_reason" in report}
+    )
+    if skip_reasons:
+        fixed_width["skip_reasons"] = skip_reasons
+    return seconds_per_batch, result, outputs_match, fixed_width
+
+
 def main():
     args = parse_args()
-    params = utils.load_params(args, load_texts=True)
+    utils = load_timing_utils()
+    params = utils.load_params(args, load_texts=True)  # force load_texts=True
     params.batch_num = args.batch_num
-    if args.batch_size is not None: # override
-        if args.batch_size <= 0:
-            raise ValueError("batch_size must be a positive integer")
+    params.num_workers = 0
+    if args.batch_size is not None:
         params.batch_size = args.batch_size
     device = utils.resolve_device(args.device)
 
-    # Dataset/model construction and DataLoader work are deliberately excluded.
     _, data_module = utils.build_task_data(params, encoder=None)
     loader = utils.select_loader(data_module, args.split, args.loader_index)
     model = utils.build_eager_model(params).to(device).eval()
     warmup(loader, model, device, args.warmup_batches)
-
-    batch_reports = []
-    totals = {
-        "fixed_width_measured_batches": 0,
-        "fixed_width_prepare_seconds": 0.0,
-        "object_numpy_prepare_seconds": 0.0,
-        "object_hash_prepare_seconds": 0.0,
-        "object_numpy_encode_seconds": 0.0,
-        "object_hash_encode_seconds": 0.0,
-    }
-
+    # 选取batch数，如果是-1默认选取全部batch
+    measured_loader = loader if args.batch_num == -1 else islice(loader, args.batch_num)
+    reports = []
     with torch.inference_mode():
-        for batch_index, g in enumerate(loader):
-            if args.batch_num != -1 and batch_index >= args.batch_num:
-                break
-
-            fixed_width = run_fixed_width_baseline(
-                g,
-                args.fixed_width_mode,
-                args.fixed_width_chars,
-                args.fixed_width_limit_gib,
-            )
-
-            started = time.perf_counter()
-            numpy_texts, numpy_mapping, numpy_inputs = prepare_numpy(g)
-            numpy_prepare_seconds = time.perf_counter() - started
-
-            started = time.perf_counter()
-            hash_texts, hash_mapping, hash_node_inputs, hash_edge_inputs = prepare_hash(g)
-            hash_prepare_seconds = time.perf_counter() - started
-            hash_inputs = hash_node_inputs + hash_edge_inputs
-
-            # Alternate execution order so multi-batch runs do not always favor one path.
-            if batch_index % 2 == 0:
-                numpy_features, numpy_encode = encode_unique_texts(
-                    model, numpy_texts, device
-                )
-                hash_features, hash_encode = encode_unique_texts(model, hash_texts, device)
-                encode_order = ["object_numpy", "object_hash"]
-            else:
-                hash_features, hash_encode = encode_unique_texts(model, hash_texts, device)
-                numpy_features, numpy_encode = encode_unique_texts(
-                    model, numpy_texts, device
-                )
-                encode_order = ["object_hash", "object_numpy"]
-
-            correctness = compare_features(
-                numpy_texts,
-                numpy_features,
-                hash_texts,
-                hash_features,
-                args.rtol,
-                args.atol,
-            )
-            correctness.update(
-                {
-                    "object_numpy_mapping_restores_inputs": mapping_restores_inputs(
-                        numpy_texts, numpy_mapping, numpy_inputs
-                    ),
-                    "object_hash_mapping_restores_inputs": mapping_restores_inputs(
-                        hash_texts, hash_mapping, hash_inputs
-                    ),
-                }
-            )
-            numpy_unique_digest = _text_digest(numpy_texts)
-            fixed_width["unique_texts_match_object_numpy"] = (
-                fixed_width.get("unique_text_digest") == numpy_unique_digest
-                if fixed_width["status"] == "measured"
-                else None
-            )
-            if fixed_width["status"] == "measured":
-                fixed_width["encode_reused_from_object_numpy"] = fixed_width[
-                    "unique_texts_match_object_numpy"
-                ]
-                fixed_width["prepare_plus_encode_seconds"] = (
-                    fixed_width["prepare_seconds"]
-                    + numpy_encode["encode_total_seconds"]
-                    if fixed_width["unique_texts_match_object_numpy"]
-                    else None
-                )
-
-            node_array = np.asarray(g.x)
-            edge_array = np.asarray(g.edge_attr)
-            batch_report = {
-                "batch_index": batch_index,
-                "encode_order": encode_order,
-                "node_text_count": int(node_array.size),
-                "edge_text_count": int(edge_array.size),
-                "node_dtype": str(node_array.dtype),
-                "edge_dtype": str(edge_array.dtype),
-                "node_array_shallow_bytes": int(node_array.nbytes),
-                "edge_array_shallow_bytes": int(edge_array.nbytes),
-                "unique_text_count": len(hash_texts),
-                "max_text_characters": max(map(len, hash_inputs)),
-                "fixed_width_numpy": fixed_width,
-                "object_numpy": {
-                    "prepare_seconds": numpy_prepare_seconds,
-                    **numpy_encode,
-                },
-                "object_hash": {
-                    "prepare_seconds": hash_prepare_seconds,
-                    **hash_encode,
-                },
-                "speedup": {
-                    "object_numpy_over_object_hash_prepare": _ratio(
-                        numpy_prepare_seconds, hash_prepare_seconds
-                    ),
-                    "tokenizer": _ratio(
-                        numpy_encode["tokenizer_seconds"],
-                        hash_encode["tokenizer_seconds"],
-                    ),
-                    "llm_forward": _ratio(
-                        numpy_encode["llm_forward_seconds"],
-                        hash_encode["llm_forward_seconds"],
-                    ),
-                    "object_numpy_over_object_hash_prepare_plus_encode": _ratio(
-                        numpy_prepare_seconds + numpy_encode["encode_total_seconds"],
-                        hash_prepare_seconds + hash_encode["encode_total_seconds"],
-                    ),
-                    "fixed_width_over_object_numpy_prepare": _ratio(
-                        fixed_width["prepare_seconds"], numpy_prepare_seconds
-                    ) if fixed_width["status"] == "measured" else None,
-                    "fixed_width_over_object_hash_prepare_plus_encode": _ratio(
-                        fixed_width["prepare_plus_encode_seconds"],
-                        hash_prepare_seconds + hash_encode["encode_total_seconds"],
-                    ) if fixed_width.get("prepare_plus_encode_seconds") is not None else None,
-                },
-                "correctness": correctness,
-            }
-            batch_reports.append(batch_report)
-
-            if fixed_width["status"] == "measured":
-                totals["fixed_width_measured_batches"] += 1
-                totals["fixed_width_prepare_seconds"] += fixed_width["prepare_seconds"]
-            totals["object_numpy_prepare_seconds"] += numpy_prepare_seconds
-            totals["object_hash_prepare_seconds"] += hash_prepare_seconds
-            totals["object_numpy_encode_seconds"] += numpy_encode["encode_total_seconds"]
-            totals["object_hash_encode_seconds"] += hash_encode["encode_total_seconds"]
-
-            del numpy_features, hash_features
-
-    if not batch_reports:
+        for batch_index, batch in enumerate(measured_loader):
+            reports.append(benchmark_batch(batch, model, device, args, batch_index))
+    if not reports:
         raise RuntimeError("No batches were measured")
 
-    totals["object_numpy_over_object_hash_prepare_speedup"] = _ratio(
-        totals["object_numpy_prepare_seconds"],
-        totals["object_hash_prepare_seconds"],
-    )
-    totals["object_numpy_over_object_hash_prepare_plus_encode_speedup"] = _ratio(
-        totals["object_numpy_prepare_seconds"]
-        + totals["object_numpy_encode_seconds"],
-        totals["object_hash_prepare_seconds"]
-        + totals["object_hash_encode_seconds"],
-    )
-    if totals["fixed_width_measured_batches"] == len(batch_reports):
-        totals["fixed_width_over_object_numpy_prepare_speedup"] = _ratio(
-            totals["fixed_width_prepare_seconds"],
-            totals["object_numpy_prepare_seconds"],
-        )
-    else:
-        totals["fixed_width_over_object_numpy_prepare_speedup"] = None
+    seconds_per_batch, result, outputs_match, fixed_width = aggregate(reports)
     report = {
-        "scope": "after DataLoader returned g; GNN and metric excluded",
-        "task_names": utils.normalize_task_names(params.task_names),
-        "split": args.split,
-        "loader_index": args.loader_index,
-        "device": str(device),
-        "llm_name": params.llm_name,
-        "batch_size": params.batch_size,
-        "llm_batch_size": params.llm_b_size,
-        "llm_max_length": params.llm_max_length,
-        "fixed_width_mode": args.fixed_width_mode,
-        "fixed_width_chars": args.fixed_width_chars,
-        "fixed_width_limit_gib": args.fixed_width_limit_gib,
-        "measured_batches": len(batch_reports),
-        "totals": totals,
-        "batches": batch_reports,
+        "scope": (
+            "total=model(g); encode=text preparation + tokenize + Transformer + "
+            "feature restoration; gnn_and_head=total - encode and includes projection, "
+            "optional RWPE/attention, GNN, and prediction head; DataLoader, device "
+            "transfer, and benchmark input construction excluded; CUDA synchronized at "
+            "the forward start, encode boundary, and forward end"
+        ),
+        "config": {
+            "task_names": utils.normalize_task_names(params.task_names),
+            "split": args.split,
+            "device": str(device),
+            "llm_name": params.llm_name,
+            "graph_batch_size": params.batch_size,
+            "text_batch_size": params.llm_b_size,
+            "max_text_length": params.llm_max_length,
+            "measured_batches": len(reports),
+            "repeats": args.repeats,
+        },
+        "seconds_per_batch": seconds_per_batch,
+        "result": result,
+        "outputs_match": outputs_match,
+        "fixed_width": fixed_width,
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

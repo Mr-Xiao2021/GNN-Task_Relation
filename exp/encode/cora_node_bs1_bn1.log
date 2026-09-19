@@ -1,6 +1,16 @@
-[2026-09-19 11:50:33,414] [INFO] [real_accelerator.py:161:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2026-09-19 14:12:09,448] [INFO] [real_accelerator.py:161:get_accelerator] Setting ds_accelerator to cuda (auto detect)
 /data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torch_geometric/data/in_memory_dataset.py:284: UserWarning: It is not recommended to directly access the internal storage format `data` of an 'InMemoryDataset'. If you are absolutely certain what you are doing, access the internal storage via `InMemoryDataset._data` instead to suppress this warning. Alternatively, you can access stacked individual attributes of every graph via `dataset.{attr_name}`.
   warnings.warn(msg)
+[encode_timing] _prepare_graph_texts=0.115 ms, _encode_texts=179.050 ms, _restore_graph_text_features=4.960 ms
+[encode_timing] _prepare_graph_texts=3.466 ms, _encode_texts=55.825 ms, _restore_graph_text_features=0.154 ms
+[encode_timing] _prepare_graph_texts=0.277 ms, _encode_texts=55.547 ms, _restore_graph_text_features=0.156 ms
+[encode_timing] _prepare_graph_texts=0.156 ms, _encode_texts=55.022 ms, _restore_graph_text_features=0.190 ms
+[encode_timing] _prepare_graph_texts=0.227 ms, _encode_texts=55.078 ms, _restore_graph_text_features=0.161 ms
+[encode_timing] _prepare_graph_texts=0.113 ms, _encode_texts=55.159 ms, _restore_graph_text_features=0.303 ms
+[encode_timing] _prepare_graph_texts=2.445 ms, _encode_texts=55.093 ms, _restore_graph_text_features=0.360 ms
+[encode_timing] _prepare_graph_texts=0.108 ms, _encode_texts=55.508 ms, _restore_graph_text_features=0.183 ms
+[encode_timing] _prepare_graph_texts=1.881 ms, _encode_texts=55.300 ms, _restore_graph_text_features=0.221 ms
+[encode_timing] _prepare_graph_texts=0.244 ms, _encode_texts=55.164 ms, _restore_graph_text_features=0.190 ms
 {
   "scope": "total=model(g); encode=text preparation + tokenize + Transformer + feature restoration; gnn_and_head=total - encode and includes projection, optional RWPE/attention, GNN, and prediction head; DataLoader, device transfer, and benchmark input construction excluded; CUDA synchronized at the forward start, encode boundary, and forward end",
   "config": {
@@ -11,26 +21,55 @@
     "device": "cuda:0",
     "llm_name": "ST",
     "graph_batch_size": 1,
-    "text_batch_size": 100,
+    "text_batch_size": 500,
     "max_text_length": 500,
     "measured_batches": 1,
-    "repeats": 3
+    "repeats": 3,
+    "rtol": 0.0001,
+    "atol": 1e-05
+  },
+  "batch_workload": {
+    "graph_count": {
+      "min": 1,
+      "mean": 1.0,
+      "max": 1
+    },
+    "node_count": {
+      "min": 60,
+      "mean": 60.0,
+      "max": 60
+    },
+    "edge_count": {
+      "min": 190,
+      "mean": 190.0,
+      "max": 190
+    },
+    "text_count": {
+      "min": 250,
+      "mean": 250.0,
+      "max": 250
+    },
+    "unique_text_count": {
+      "min": 62,
+      "mean": 62.0,
+      "max": 62
+    }
   },
   "seconds_per_batch": {
     "fixed_width_numpy": {
-      "total": 0.06579123297706246,
-      "encode": 0.05810848297551274,
-      "gnn_and_head": 0.007682750001549721
+      "total": 0.06641061883419752,
+      "encode": 0.05808185180649161,
+      "gnn_and_head": 0.008328767027705908
     },
     "object_numpy": {
-      "total": 0.06301647797226906,
-      "encode": 0.055449540726840496,
-      "gnn_and_head": 0.007566937245428562
+      "total": 0.06329510686919093,
+      "encode": 0.05575133487582207,
+      "gnn_and_head": 0.007543771993368864
     },
     "python_hash": {
-      "total": 0.06288430700078607,
-      "encode": 0.05513888085260987,
-      "gnn_and_head": 0.007745426148176193
+      "total": 0.06318163499236107,
+      "encode": 0.05572465807199478,
+      "gnn_and_head": 0.007456976920366287
     }
   },
   "result": {
@@ -38,9 +77,9 @@
     "object_numpy_faster_than_fixed_width": true,
     "python_hash_faster_than_fixed_width": true,
     "python_hash_faster_than_object_numpy": true,
-    "object_numpy_speedup_vs_fixed_width": 1.0440322133841637,
-    "python_hash_speedup_vs_fixed_width": 1.0462265724935167,
-    "python_hash_speedup_vs_object_numpy": 1.0021018116885878
+    "object_numpy_speedup_vs_fixed_width": 1.0492220033919095,
+    "python_hash_speedup_vs_fixed_width": 1.0511063672573027,
+    "python_hash_speedup_vs_object_numpy": 1.0017959629699924
   },
   "outputs_match": true,
   "fixed_width": {

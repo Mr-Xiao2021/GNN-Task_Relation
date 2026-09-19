@@ -205,9 +205,9 @@ FB15K237
 
 `fixed_width_numpy` 是从当前 batch 文本通过 `np.asarray(texts)` 隐式推断出的固定宽度对照。当前 object batch 已经丢失 main 旧缓存的全局 dtype 宽度，因此它不是旧 main 缓存布局的逐字节复刻。
 
-## Exp：E2E Node 基础实验（batch_size=1，batch_num=1）
+## Exp：E2E Node 基础实验（batch_size=1，batch_num=1，llm_b_size=500）
 
-本节记录 2026-09-19 在 `feat/np-encode` 分支上完成的首组 E2E Node 基准实验。实验基线提交为 `962b26f`，物理设备为 NVIDIA H100 PCIe GPU 1；通过 `CUDA_VISIBLE_DEVICES=1` 映射后，脚本使用 `cuda:0`。
+本节记录 2026-09-19 在 `feat/np-encode` 分支提交 `0f09374` 上完成的 E2E Node 基准实验。本次代码已在 `EagerSentenceEncoder._encode_graph_texts()` 中加入细粒度计时。物理设备为 NVIDIA H100 PCIe GPU 1；通过 `CUDA_VISIBLE_DEVICES=1` 映射后，脚本使用 `cuda:0`。
 
 ### 参数配置
 
@@ -215,19 +215,25 @@ FB15K237
 - 数据切分：`test`，`loader_index=0`；
 - `batch_size=1`，`batch_num=1`；
 - `repeats=3`，`warmup_batches=1`；
-- `llm_name=ST`，`llm_b_size=100`，`llm_max_length=500`；
+- `llm_name=ST`，`llm_b_size=500`，`llm_max_length=500`；
 - `llm_peft=false`，`llm_quantization=false`，`llm_trainable=false`；
-- `fixed_width_mode=auto`，`fixed_width_limit_gib=4`。
+- `fixed_width_mode=auto`，`fixed_width_limit_gib=4`；
+- Cora/PubMed 使用 `rtol=1e-4, atol=1e-5`，WikiCS 使用 `rtol=1e-4, atol=3e-5`。
 
 ### 执行命令
 
-Cora、PubMed 和 WikiCS 首次运行均使用默认一致性容差 `rtol=1e-4, atol=1e-5`。实际运行时，每个任务的标准输出和错误输出均重定向到独立日志：
+每个任务的标准输出和错误输出均重定向到独立日志：
 
 ```bash
-OUT_DIR=outputs/encode_benchmark_bs1_bn1_260919115027
+OUT_DIR=outputs/encode_benchmark_bs1_bn1_llmbs500_260919141125
 mkdir -p "$OUT_DIR"
 
 for TASK in cora_node pubmed_node wikics; do
+  EXTRA_ARGS=()
+  if [ "$TASK" = "wikics" ]; then
+    EXTRA_ARGS=(--rtol 1e-4 --atol 3e-5)
+  fi
+
   CUDA_VISIBLE_DEVICES=1 /home/xxr/miniconda3/bin/conda run --no-capture-output \
     -p /data1/xxr_data/new_conda/ofa \
     python exp/encode/benchmark_loaded_g.py \
@@ -240,9 +246,10 @@ for TASK in cora_node pubmed_node wikics; do
     --device cuda:0 \
     --fixed-width-mode auto \
     --fixed-width-limit-gib 4 \
+    "${EXTRA_ARGS[@]}" \
     task_names "$TASK" \
     llm_name ST \
-    llm_b_size 100 \
+    llm_b_size 500 \
     llm_max_length 500 \
     llm_peft false \
     llm_quantization false \
@@ -251,55 +258,58 @@ for TASK in cora_node pubmed_node wikics; do
 done
 ```
 
-WikiCS 首次运行在默认 `atol=1e-5` 下因最大绝对误差 `1.99489e-5` 未通过一致性检查，因此使用同一组实验参数，仅将绝对容差放宽到 `3e-5` 后重跑：
+### Batch Workload
 
-```bash
-CUDA_VISIBLE_DEVICES=1 /home/xxr/miniconda3/bin/conda run --no-capture-output \
-  -p /data1/xxr_data/new_conda/ofa \
-  python exp/encode/benchmark_loaded_g.py \
-  --split test \
-  --loader-index 0 \
-  --batch-size 1 \
-  --batch-num 1 \
-  --repeats 3 \
-  --warmup-batches 1 \
-  --device cuda:0 \
-  --fixed-width-mode auto \
-  --fixed-width-limit-gib 4 \
-  --rtol 1e-4 \
-  --atol 3e-5 \
-  task_names wikics \
-  llm_name ST \
-  llm_b_size 100 \
-  llm_max_length 500 \
-  llm_peft false \
-  llm_quantization false \
-  llm_trainable false \
-  > "$OUT_DIR/wikics_retry_atol3e-5.log" 2>&1
-```
+由于本次 `batch_num=1`，以下数据为每个任务首个 test batch 的采样子图规模，`min/mean/max` 相同；不是完整数据集的节点或边总数。
 
-### 实验结果
+| 数据集 | Graph 数 | Node 数 | Edge 数 | Node + Edge 文本数 | 去重后文本数 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cora | 1 | 60 | 190 | 250 | 62 |
+| PubMed | 1 | 74 | 178 | 252 | 76 |
+| WikiCS | 1 | 115 | 426 | 541 | 114 |
+
+三个任务的去重文本数都小于 `llm_b_size=500`，因此每条路径都只需一个 LLM 子 batch。
+
+### 端到端结果
 
 下表单位均为毫秒/批次。`GNN + head` 对应脚本中的 `gnn_and_head`，包含 embedding projection、可选 RWPE/attention、GNN 和 prediction head，并非纯 GNN kernel 时间。
 
 | 数据集 | 编码路径 | Total | Encode | GNN + head |
 | --- | --- | ---: | ---: | ---: |
-| Cora | `fixed_width_numpy` | 65.791 | 58.108 | 7.683 |
-| Cora | `object_numpy` | 63.016 | 55.450 | 7.567 |
-| Cora | **`python_hash`** | **62.884** | **55.139** | 7.745 |
-| PubMed | `fixed_width_numpy` | 134.641 | 126.858 | 7.783 |
-| PubMed | **`object_numpy`** | **129.232** | 121.620 | **7.612** |
-| PubMed | `python_hash` | 129.316 | **121.371** | 7.945 |
-| WikiCS | `fixed_width_numpy` | 465.677 | 458.132 | 7.545 |
-| WikiCS | **`object_numpy`** | **248.242** | **240.931** | **7.311** |
-| WikiCS | `python_hash` | 253.692 | 246.311 | 7.381 |
+| Cora | `fixed_width_numpy` | 66.411 | 58.082 | 8.329 |
+| Cora | `object_numpy` | 63.295 | 55.751 | 7.544 |
+| Cora | **`python_hash`** | **63.182** | **55.725** | **7.457** |
+| PubMed | `fixed_width_numpy` | 133.832 | 126.161 | 7.672 |
+| PubMed | `object_numpy` | 129.153 | 121.641 | **7.512** |
+| PubMed | **`python_hash`** | **129.132** | **121.363** | 7.770 |
+| WikiCS | `fixed_width_numpy` | 478.163 | 470.476 | 7.687 |
+| WikiCS | `object_numpy` | 261.327 | 253.817 | **7.510** |
+| WikiCS | **`python_hash`** | **257.426** | **249.715** | 7.711 |
 
-三组最终结果均满足各自容差下的 `outputs_match=true`。Cora 的 `python_hash` 相对固定宽度路径加速 `1.046x`；PubMed 的 `object_numpy` 加速 `1.042x`，与 `python_hash` 基本持平；WikiCS 的 `object_numpy` 加速 `1.876x`，端到端时延降低约 `46.7%`。三组任务的 `GNN + head` 均稳定在约 `7.3-7.9 ms`，路径差异主要来自 Encode 阶段。
+三组最终结果均满足各自容差下的 `outputs_match=true`。最快路径均为 `python_hash`：相对固定宽度路径，Cora、PubMed 和 WikiCS 分别加速 `1.051x`、`1.036x` 和 `1.857x`；WikiCS 的 `python_hash` 相对 `object_numpy` 另有 `1.015x` 加速。
 
-这里的计时不包含数据集初始化、磁盘读取、DataLoader/采样/collate、设备搬运、benchmark 输入构造及指标计算。
+### Encode 细粒度结果
+
+下表从每个日志中排除 warmup 行，将三次正式调用按实际轮换顺序映射回对应路径，然后对每个阶段分别取中位数，单位为毫秒。各阶段独立取中位数，因此三项之和不要求严格等于上表中按 `total` 选出的代表调用 `Encode`。
+
+| 数据集 | 编码路径 | `_prepare_graph_texts` | `_encode_texts` | `_restore_graph_text_features` |
+| --- | --- | ---: | ---: | ---: |
+| Cora | `fixed_width_numpy` | 2.445 | 55.300 | 0.221 |
+| Cora | `object_numpy` | 0.244 | 55.164 | **0.161** |
+| Cora | `python_hash` | **0.113** | **55.159** | 0.190 |
+| PubMed | `fixed_width_numpy` | 6.148 | **120.031** | 0.159 |
+| PubMed | `object_numpy` | 0.218 | 121.104 | **0.156** |
+| PubMed | `python_hash` | **0.113** | 120.262 | 0.826 |
+| WikiCS | `fixed_width_numpy` | 213.818 | 251.811 | 0.209 |
+| WikiCS | `object_numpy` | 0.368 | 253.043 | **0.197** |
+| WikiCS | `python_hash` | **0.178** | **249.168** | 0.206 |
+
+在 object/python-hash 路径中，耗时几乎全部集中于 `_encode_texts`。WikiCS 固定宽度路径的 `_prepare_graph_texts` 中位数达到 `213.818 ms`，约占三个 Encode 子阶段中位数总和的 `45.9%`，是其相对 object/python-hash 明显变慢的主要原因。
+
+细粒度代码增加了 CUDA synchronize 和逐次打印，属于侵入式诊断，因此本轮绝对时间不应与旧的未插桩日志作严格对比。这里的端到端计时不包含数据集初始化、磁盘读取、DataLoader/采样/collate、设备搬运、benchmark 输入构造及指标计算。
 
 ### 原始日志
 
-- [Cora 日志](./cora_node_bs1_bn1.log)
-- [PubMed 日志](./pubmed_node_bs1_bn1.log)
-- [WikiCS 日志（atol=3e-5）](./wikics_bs1_bn1_atol3e-5.log)
+- [Cora 日志（llm_b_size=500）](./cora_node_bs1_bn1.log)
+- [PubMed 日志（llm_b_size=500）](./pubmed_node_bs1_bn1.log)
+- [WikiCS 日志（llm_b_size=500, atol=3e-5）](./wikics_bs1_bn1_atol3e-5.log)

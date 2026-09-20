@@ -79,10 +79,7 @@ def parse_args():
         "--device",
         type=str,
         default="auto",
-        help=(
-            "auto, cpu, cuda, or cuda:0; select a physical GPU with "
-            "CUDA_VISIBLE_DEVICES"
-        ),
+        help="auto, cpu, cuda, or cuda:N",
     )
     parser.add_argument(
         "opts",
@@ -138,39 +135,6 @@ def summarize(values, include_samples=True):
     return report
 
 
-def normalize_train_sample_size(params):
-    value = params.train_sample_size
-    if isinstance(value, bool):
-        raise ValueError("train_sample_size must be an integer")
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("train_sample_size must be an integer") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("train_sample_size must be an integer")
-    params.train_sample_size = normalized
-
-
-def build_sentence_encoder(params, device):
-    """Construct on the requested device despite SentenceEncoder auto-discovery."""
-    project_utils = utils.project_utils
-    original_get_devices = project_utils.get_available_devices
-
-    def get_selected_device():
-        gpu_ids = [device.index] if device.type == "cuda" else []
-        return device, gpu_ids
-
-    project_utils.get_available_devices = get_selected_device
-    try:
-        return project_utils.SentenceEncoder(
-            params.llm_name,
-            batch_size=params.llm_b_size,
-            max_length=params.llm_max_length,
-        )
-    finally:
-        project_utils.get_available_devices = original_get_devices
-
-
 def disable_encoder_progress_bar():
     """Remove tqdm rendering from the measured SentenceEncoder path."""
     original_trange = utils.project_utils.trange
@@ -209,6 +173,9 @@ def iter_text_groups(value):
         yield from iter_text_groups(item)
 
 
+"""
+基本就是 Encode 工作负载的描述信息，用于报告和排查，不参与实际编码调度。
+"""
 def build_encode_jobs(tasks, text_batch_size, warmup_batches):
     jobs = []
     manifest = []
@@ -310,7 +277,7 @@ def selected_graph_dataset(data_module, split, loader_index):
     if split == "train":
         if loader_index != 0:
             raise ValueError("loader_index must be 0 for the train split")
-        return data_module.datasets["train"].data
+        return data_module.datasets["train"].data # train只有一个DataMeta对象包装，.data返MultiDataset
 
     entries = data_module.datasets["val" if split == "val" else "test"]
     if not isinstance(entries, list):
@@ -320,7 +287,7 @@ def selected_graph_dataset(data_module, split, loader_index):
             f"loader_index={loader_index} is out of range for {split}; "
             f"available loaders: 0..{len(entries) - 1}"
         )
-    return entries[loader_index].data
+    return entries[loader_index].data # val和test都有多个DataMeta对象包装，.data返SubgraphHierDataset
 
 
 def iter_hop_datasets(dataset, seen=None):
@@ -365,6 +332,7 @@ def run_gnn_warmup(loader, model, device, warmup_batches):
         return 0
     warmed = 0
     with torch.inference_mode():
+        # 从 DataLoader 中只取前 warmup_batches 个 batch
         for batch in islice(loader, warmup_batches):
             model(utils.move_batch(batch, device))
             warmed += 1
@@ -375,11 +343,12 @@ def run_gnn_warmup(loader, model, device, warmup_batches):
 class GnnCoreTimer:
     """Time only model.model (PyGRGCNEdge) without synchronizing each batch."""
 
-    def __init__(self, module, device):
+    def __init__(self, module, device): # module: nn.Module,此处module为PyGRGCNEdge对象
         self.device = device
         self.event_pairs = []
         self.cpu_seconds = 0.0
         self.current_start = None
+        # 每次forward的记时，所以忽略了隔次的时间缝隙
         self.pre_handle = module.register_forward_pre_hook(self._before)
         self.post_handle = module.register_forward_hook(self._after)
 
@@ -413,28 +382,57 @@ class GnnCoreTimer:
         self.pre_handle.remove()
         self.post_handle.remove()
 
-
+"""
+profiled_total_seconds
+├─ encode_seconds                         离线 Transformer 编码
+└─ ⭐pipeline_wall_seconds                  GNN 阶段从取数据到推理完成的实际总耗时
+   ├─ gnn_seconds                         完整 model(batch) 的设备执行
+   │  ├─ gnn_core_seconds                 PyGRGCNEdge 消息传递
+   │  └─ downstream_noncore_device_seconds
+   │     ├─ embedding 线性投影
+   │     ├─ RWPE
+   │     ├─ 层间 attention / JK
+   │     └─ MLP 预测头
+   └─ other_seconds
+      ├─ DataLoader 等待、采样和 collate
+      ├─ CPU 到 GPU 搬运
+      ├─ Python 循环和统计
+      └─ 其他运行时开销
+"""
 def time_model_batches(loader, model, core_timer, device, batch_num):
+    """统计一次 loader 推理，并拆分完整模型、GNN core 与其余流水线耗时。"""
+    # 显存峰值和 GNN core hook 均按本次 repeat 单独统计。
     baseline = reset_peak_memory(device)
     core_timer.reset()
+
+    # 本轮实际处理的 batch、子图、节点、边以及模型输出标量总数。
     measured_batches = 0
     measured_graphs = 0
     measured_nodes = 0
     measured_edges = 0
     output_values = 0
+
+    # 保留每个 batch 的节点数和边数，用于报告 median、IQR、min、max。
     nodes_per_batch = []
     edges_per_batch = []
+
+    # 主进程在 next(iterator) 中等待采样、collate 或 worker 返回数据的累计时间。
     loader_wait_seconds = 0.0
+    # CUDA Event 对：完整 model(batch) forward 的开始与结束。
     downstream_event_pairs = []
+    # CUDA Event 对：batch 搬到设备之前，到完整 forward 结束。
     device_pipeline_event_pairs = []
+    # CPU 模式没有 CUDA Event，使用这两个变量累计对应的计时区间。
     cpu_downstream_seconds = 0.0
     cpu_device_pipeline_seconds = 0.0
 
+    # 先完成之前的异步 CUDA 工作，再开始记录本次端到端总耗时。
     utils.synchronize(device)
     wall_started = time.perf_counter()
     iterator = iter(loader)
     with torch.inference_mode():
         while batch_num == -1 or measured_batches < batch_num:
+            # next() 的等待包含采样、collate 以及等待 DataLoader worker。
             fetch_started = time.perf_counter()
             try:
                 batch = next(iterator)
@@ -444,6 +442,8 @@ def time_model_batches(loader, model, core_timer, device, batch_num):
             loader_wait_seconds += time.perf_counter() - fetch_started
 
             if device.type == "cuda":
+                # device_started -> forward_finished：H2D + 完整模型 forward。
+                # forward_started -> forward_finished：仅完整模型 forward。
                 device_started = record_cuda_event(device)
                 batch = utils.move_batch(batch, device)
                 forward_started = record_cuda_event(device)
@@ -471,8 +471,9 @@ def time_model_batches(loader, model, core_timer, device, batch_num):
             edges_per_batch.append(batch_edges)
             del output, batch
 
+    # CUDA Event 是异步记录的；同步后才能读取完整时间并结束总计时。
     utils.synchronize(device)
-    pipeline_wall_seconds = time.perf_counter() - wall_started
+    pipeline_wall_seconds = time.perf_counter() - wall_started # 总耗时，包含数据加载、模型 forward 等所有操作
     if measured_batches == 0:
         raise RuntimeError(
             "No batches were measured; check split, batch_size, and drop_last"
@@ -491,6 +492,8 @@ def time_model_batches(loader, model, core_timer, device, batch_num):
         downstream_device_seconds = cpu_downstream_seconds
         device_pipeline_seconds = cpu_device_pipeline_seconds
 
+    # core_timer 由 model.model 的 forward hooks 记录，仅覆盖 PyGRGCNEdge。
+    # gnn_seconds 覆盖完整 model(batch)；other_seconds 是总耗时扣除它后的残差。
     gnn_core_seconds = core_timer.seconds()
     gnn_seconds = downstream_device_seconds
     other_seconds = max(0.0, pipeline_wall_seconds - gnn_seconds)
@@ -515,7 +518,7 @@ def time_model_batches(loader, model, core_timer, device, batch_num):
         "output_values": output_values,
         "nodes_per_batch": summarize(nodes_per_batch, include_samples=False),
         "edges_per_batch": summarize(edges_per_batch, include_samples=False),
-        "other_was_clamped": gnn_seconds > pipeline_wall_seconds,
+        "other_was_clamped": gnn_seconds > pipeline_wall_seconds, # 默认 False
     }
     result.update(peak_memory_report(device, baseline))
     return result
@@ -572,6 +575,25 @@ def make_report(
     metric_report,
     model,
 ):
+    """汇总各轮计时并打印最终 JSON 报告。
+
+    Args:
+        params: 合并后的项目配置。
+        args: benchmark 命令行参数。
+        device: 模型运行设备。
+        checkpoint_loaded: 是否加载了 GNN checkpoint。
+        encoder_load_seconds: Encoder 加载时间，不计入占比。
+        model_load_seconds: GNN 模型加载时间，不计入占比。
+        data_preparation_seconds: 数据构造时间，不计入占比。
+        text_manifest: 各数据集的文本工作量摘要。
+        warmed_texts: Encoder 预热文本数。
+        warmed_graph_batches: GNN 预热 batch 数。
+        hop_settings: 图采样跳数和节点上限。
+        encode_runs: 各轮 Encode 计时结果。
+        graph_runs: 各轮 GNN 计时和工作量结果。
+        metric_report: 独立非计时 pass 的指标结果。
+        model: 用于读取 dtype 和 GNN 类型的下游模型。
+    """
     encode_stats = summarize(run["encode_seconds"] for run in encode_runs)
     gnn_stats = summarize(run["gnn_seconds"] for run in graph_runs)
     gnn_core_stats = summarize(run["gnn_core_seconds"] for run in graph_runs)
@@ -856,7 +878,6 @@ def main():
     utils = timing_utils
     disable_encoder_progress_bar()
     params = utils.load_params(args, load_texts=False)
-    normalize_train_sample_size(params)
     task_names = utils.normalize_task_names(params.task_names)
     if len(task_names) != 1:
         raise ValueError(
@@ -865,20 +886,18 @@ def main():
     if params.llm_b_size <= 0:
         raise ValueError("llm_b_size must be positive for offline SentenceEncoder")
     device = utils.resolve_device(args.device)
-    if device.type == "cuda" and device.index not in (None, 0):
-        raise ValueError(
-            "SentenceEncoder must use logical cuda:0. Select another physical GPU "
-            "with CUDA_VISIBLE_DEVICES=<id> and pass --device cuda:0."
-        )
 
+    # 加载encode模型(Transformer部分)，时间为encoder_load_seconds
     encoder_load_started = time.perf_counter()
-    encoder = build_sentence_encoder(params, device)
+    encoder = utils.project_utils.SentenceEncoder(
+        params.llm_name,
+        batch_size=params.llm_b_size,
+        max_length=params.llm_max_length,
+    )
     if device.type == "cuda":
-        # Keep later allocations and implicit CUDA operations on the target device.
         torch.cuda.set_device(device)
-    if encoder.device != device:
-        encoder.device = device
-        encoder.model.to(device)
+    encoder.device = device
+    encoder.model.to(device)
     utils.synchronize(device)
     encoder_load_seconds = time.perf_counter() - encoder_load_started
 
@@ -892,7 +911,7 @@ def main():
         params.llm_b_size,
         args.encode_warmup_batches,
     )
-    warmed_texts = warmup_encoder(encoder, warmup_texts)
+    warmed_texts = warmup_encoder(encoder, warmup_texts) # warmup encoder
     encode_runs = [
         time_global_offline_encode(jobs, device) for _ in range(args.repeats)
     ]
@@ -926,6 +945,7 @@ def main():
             utils.set_random_seed(params.seed)
             loader = utils.select_loader(data_module, args.split, args.loader_index)
             graph_runs.append(
+                # GNN forward
                 time_model_batches(
                     loader,
                     model,

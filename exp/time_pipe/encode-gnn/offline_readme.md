@@ -69,7 +69,7 @@ checkpoint 权重值通常不会明显改变算子耗时，但加载 checkpoint 
 
 若 cache 尚不存在，`build_task_data` 会在不计时的数据准备阶段先完成一次全量编码并建 cache，使 encoder 比“已有 cache”路径更热。第一次构建只用于准备数据；结束该进程后，再启动正式计时命令。上面的冒烟测试可以承担这一步。
 
-脚本内始终使用逻辑设备 `cuda:0`。例如要使用物理第 3 张卡，应写 `CUDA_VISIBLE_DEVICES=3 ... --device cuda:0`；不要在多卡均可见时直接传 `--device cuda:3`，因为项目的 `SentenceEncoder` 初始化逻辑固定选择第一张可见卡。
+推荐每次只暴露一张 GPU。例如要使用物理第 3 张卡，可写 `CUDA_VISIBLE_DEVICES=3 ... --device cuda:0`；`--device` 决定脚本最终放置 SentenceEncoder 和 GNN 的逻辑设备。
 
 所有 `--...` profiling 参数必须放在 `task_names` 等配置覆盖项之前。`task_names` 之后的参数会由 `argparse.REMAINDER` 交给项目配置系统。
 
@@ -94,7 +94,6 @@ python exp/time_pipe/encode-gnn/offline_encode_gnn_time.py \
   llm_max_length 500 \
   batch_size 64 \
   llm_b_size 100 \
-  train_sample_size -1 \
   num_workers 0
 ```
 
@@ -126,11 +125,10 @@ python exp/time_pipe/encode-gnn/offline_encode_gnn_time.py \
   llm_max_length 500 \
   batch_size 64 \
   llm_b_size 100 \
-  train_sample_size -1 \
   num_workers 0
 ```
 
-`--batch-num -1` 和 `train_sample_size -1` 是正式占比统计的必要条件。前者遍历构造出的完整 loader；后者避免 test loader 使用有限的 replacement sampler。否则分子仍是完整全局 encode，而 GNN 只处理部分样本，会人为放大 encode 占比。
+`--batch-num -1` 是正式占比统计的必要条件，用于遍历构造出的完整 loader。`train_sample_size` 直接使用 `default_config.yaml` 中的整数 `-1`，避免 test loader 使用有限的 replacement sampler。否则分子仍是完整全局 encode，而 GNN 只处理部分样本，会人为放大 encode 占比。
 
 正式归因统计使用 `num_workers 0`，避免每次 repeat 重建 loader 时把 worker 启动和首轮 prefetch 的波动算进 `Other`。若目标是测生产吞吐，可以另跑 `num_workers 4`，但应作为不同实验报告，不能与这里的阶段占比混用。
 
@@ -184,7 +182,6 @@ for task in "${tasks[@]}"; do
     llm_max_length 500 \
     batch_size 64 \
     llm_b_size 100 \
-    train_sample_size -1 \
     num_workers 0 \
     2>&1 | tee "$RESULT_DIR/${task}.log"
   echo "[$(date --iso-8601=seconds)] END task=$task"
@@ -345,7 +342,6 @@ for TASK in "${TASKS[@]}"; do
       llm_max_length 500 \
       batch_size 64 \
       llm_b_size 100 \
-      train_sample_size -1 \
       num_workers 0 \
       > "$RESULT_DIR/${TASK}_cache_prep.log" 2>&1
   fi
@@ -373,7 +369,6 @@ for TASK in "${TASKS[@]}"; do
     llm_max_length 500 \
     batch_size 64 \
     llm_b_size 100 \
-    train_sample_size -1 \
     num_workers 0 \
     > "$RESULT_DIR/${TASK}.log" 2>&1
 done

@@ -78,9 +78,9 @@
   "other_seconds": 16.479080257453024,
   "downstream_pipeline_seconds": 18.218494811095297,
   "downstream_device_seconds": 1.739414553642273,
-  "profiled_total_seconds": 49.97560718981549,
+  "profiled_total_seconds": 
+  "gnn_ratio": 0.03480527104024356,49.97560718981549,
   "encode_ratio": 0.6354522569000816,
-  "gnn_ratio": 0.03480527104024356,
   "other_ratio": 0.32974247205967494,
   "encode_percent": 63.54522569000815,
   "gnn_percent": 3.4805271040243557,

@@ -1,0 +1,271 @@
+[2026-09-20 00:03:05,022] [INFO] [real_accelerator.py:161:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+Processing...
+Downloading http://snap.stanford.edu/ogb/data/nodeproppred/arxiv.zip
+  0%|          | 0/81 [00:00<?, ?it/s]Downloaded 0.00 GB:   0%|          | 0/81 [00:04<?, ?it/s]Downloaded 0.00 GB:   1%|          | 1/81 [00:04<05:35,  4.20s/it]Downloaded 0.00 GB:   1%|          | 1/81 [00:07<05:35,  4.20s/it]Downloaded 0.00 GB:   2%|▏         | 2/81 [00:07<04:57,  3.76s/it]Downloaded 0.00 GB:   2%|▏         | 2/81 [00:10<04:57,  3.76s/it]Downloaded 0.00 GB:   4%|▎         | 3/81 [00:10<04:07,  3.17s/it]Downloaded 0.00 GB:   4%|▎         | 3/81 [00:12<04:07,  3.17s/it]Downloaded 0.00 GB:   5%|▍         | 4/81 [00:12<03:37,  2.83s/it]Downloaded 0.00 GB:   5%|▍         | 4/81 [00:16<03:37,  2.83s/it]Downloaded 0.00 GB:   6%|▌         | 5/81 [00:16<04:00,  3.17s/it]Downloaded 0.01 GB:   6%|▌         | 5/81 [00:20<04:00,  3.17s/it]Downloaded 0.01 GB:   7%|▋         | 6/81 [00:20<04:19,  3.46s/it]Downloaded 0.01 GB:   7%|▋         | 6/81 [00:23<04:19,  3.46s/it]Downloaded 0.01 GB:   9%|▊         | 7/81 [00:23<04:22,  3.54s/it]Downloaded 0.01 GB:   9%|▊         | 7/81 [00:27<04:22,  3.54s/it]Downloaded 0.01 GB:  10%|▉         | 8/81 [00:27<04:20,  3.57s/it]Downloaded 0.01 GB:  10%|▉         | 8/81 [00:30<04:20,  3.57s/it]Downloaded 0.01 GB:  11%|█         | 9/81 [00:30<04:09,  3.47s/it]Downloaded 0.01 GB:  11%|█         | 9/81 [00:34<04:09,  3.47s/it]Downloaded 0.01 GB:  12%|█▏        | 10/81 [00:34<04:09,  3.52s/it]Downloaded 0.01 GB:  12%|█▏        | 10/81 [00:37<04:09,  3.52s/it]Downloaded 0.01 GB:  14%|█▎        | 11/81 [00:37<04:07,  3.53s/it]Downloaded 0.01 GB:  14%|█▎        | 11/81 [00:42<04:07,  3.53s/it]Downloaded 0.01 GB:  15%|█▍        | 12/81 [00:42<04:23,  3.82s/it]Downloaded 0.01 GB:  15%|█▍        | 12/81 [00:47<04:23,  3.82s/it]Downloaded 0.01 GB:  16%|█▌        | 13/81 [00:47<04:34,  4.04s/it]Downloaded 0.01 GB:  16%|█▌        | 13/81 [00:52<04:34,  4.04s/it]Downloaded 0.01 GB:  17%|█▋        | 14/81 [00:52<05:05,  4.56s/it]Downloaded 0.01 GB:  17%|█▋        | 14/81 [01:00<05:05,  4.56s/it]Downloaded 0.01 GB:  19%|█▊        | 15/81 [01:00<06:02,  5.49s/it]Downloaded 0.02 GB:  19%|█▊        | 15/81 [01:05<06:02,  5.49s/it]Downloaded 0.02 GB:  20%|█▉        | 16/81 [01:05<05:53,  5.43s/it]Downloaded 0.02 GB:  20%|█▉        | 16/81 [01:11<05:53,  5.43s/it]Downloaded 0.02 GB:  21%|██        | 17/81 [01:11<05:58,  5.61s/it]Downloaded 0.02 GB:  21%|██        | 17/81 [01:17<05:58,  5.61s/it]Downloaded 0.02 GB:  22%|██▏       | 18/81 [01:17<05:59,  5.71s/it]Downloaded 0.02 GB:  22%|██▏       | 18/81 [01:23<05:59,  5.71s/it]Downloaded 0.02 GB:  23%|██▎       | 19/81 [01:23<05:52,  5.68s/it]Downloaded 0.02 GB:  23%|██▎       | 19/81 [01:26<05:52,  5.68s/it]Downloaded 0.02 GB:  25%|██▍       | 20/81 [01:26<04:54,  4.82s/it]Downloaded 0.02 GB:  25%|██▍       | 20/81 [01:31<04:54,  4.82s/it]Downloaded 0.02 GB:  26%|██▌       | 21/81 [01:31<04:57,  4.95s/it]Downloaded 0.02 GB:  26%|██▌       | 21/81 [01:36<04:57,  4.95s/it]Downloaded 0.02 GB:  27%|██▋       | 22/81 [01:36<04:54,  5.00s/it]Downloaded 0.02 GB:  27%|██▋       | 22/81 [01:40<04:54,  5.00s/it]Downloaded 0.02 GB:  28%|██▊       | 23/81 [01:40<04:24,  4.56s/it]Downloaded 0.02 GB:  28%|██▊       | 23/81 [01:42<04:24,  4.56s/it]Downloaded 0.02 GB:  30%|██▉       | 24/81 [01:42<03:40,  3.87s/it]Downloaded 0.02 GB:  30%|██▉       | 24/81 [01:44<03:40,  3.87s/it]Downloaded 0.02 GB:  31%|███       | 25/81 [01:44<03:07,  3.35s/it]Downloaded 0.03 GB:  31%|███       | 25/81 [01:46<03:07,  3.35s/it]Downloaded 0.03 GB:  32%|███▏      | 26/81 [01:46<02:45,  3.01s/it]Downloaded 0.03 GB:  32%|███▏      | 26/81 [01:52<02:45,  3.01s/it]Downloaded 0.03 GB:  33%|███▎      | 27/81 [01:52<03:22,  3.75s/it]Downloaded 0.03 GB:  33%|███▎      | 27/81 [01:59<03:22,  3.75s/it]Downloaded 0.03 GB:  35%|███▍      | 28/81 [01:59<04:10,  4.74s/it]Downloaded 0.03 GB:  35%|███▍      | 28/81 [02:05<04:10,  4.74s/it]Downloaded 0.03 GB:  36%|███▌      | 29/81 [02:05<04:35,  5.30s/it]Downloaded 0.03 GB:  36%|███▌      | 29/81 [02:09<04:35,  5.30s/it]Downloaded 0.03 GB:  37%|███▋      | 30/81 [02:09<04:11,  4.93s/it]Downloaded 0.03 GB:  37%|███▋      | 30/81 [02:13<04:11,  4.93s/it]Downloaded 0.03 GB:  38%|███▊      | 31/81 [02:13<03:44,  4.49s/it]Downloaded 0.03 GB:  38%|███▊      | 31/81 [02:17<03:44,  4.49s/it]Downloaded 0.03 GB:  40%|███▉      | 32/81 [02:17<03:42,  4.55s/it]Downloaded 0.03 GB:  40%|███▉      | 32/81 [02:22<03:42,  4.55s/it]Downloaded 0.03 GB:  41%|████      | 33/81 [02:22<03:36,  4.51s/it]Downloaded 0.03 GB:  41%|████      | 33/81 [02:27<03:36,  4.51s/it]Downloaded 0.03 GB:  42%|████▏     | 34/81 [02:27<03:37,  4.62s/it]Downloaded 0.03 GB:  42%|████▏     | 34/81 [02:33<03:37,  4.62s/it]Downloaded 0.03 GB:  43%|████▎     | 35/81 [02:33<03:50,  5.02s/it]Downloaded 0.04 GB:  43%|████▎     | 35/81 [02:38<03:50,  5.02s/it]Downloaded 0.04 GB:  44%|████▍     | 36/81 [02:38<03:47,  5.05s/it]Downloaded 0.04 GB:  44%|████▍     | 36/81 [02:40<03:47,  5.05s/it]Downloaded 0.04 GB:  46%|████▌     | 37/81 [02:40<02:59,  4.07s/it]Downloaded 0.04 GB:  46%|████▌     | 37/81 [02:41<02:59,  4.07s/it]Downloaded 0.04 GB:  47%|████▋     | 38/81 [02:41<02:15,  3.16s/it]Downloaded 0.04 GB:  47%|████▋     | 38/81 [02:42<02:15,  3.16s/it]Downloaded 0.04 GB:  48%|████▊     | 39/81 [02:42<01:44,  2.49s/it]Downloaded 0.04 GB:  48%|████▊     | 39/81 [02:43<01:44,  2.49s/it]Downloaded 0.04 GB:  49%|████▉     | 40/81 [02:43<01:24,  2.07s/it]Downloaded 0.04 GB:  49%|████▉     | 40/81 [02:44<01:24,  2.07s/it]Downloaded 0.04 GB:  51%|█████     | 41/81 [02:44<01:15,  1.89s/it]Downloaded 0.04 GB:  51%|█████     | 41/81 [02:47<01:15,  1.89s/it]Downloaded 0.04 GB:  52%|█████▏    | 42/81 [02:47<01:27,  2.25s/it]Downloaded 0.04 GB:  52%|█████▏    | 42/81 [02:51<01:27,  2.25s/it]Downloaded 0.04 GB:  53%|█████▎    | 43/81 [02:51<01:42,  2.69s/it]Downloaded 0.04 GB:  53%|█████▎    | 43/81 [02:57<01:42,  2.69s/it]Downloaded 0.04 GB:  54%|█████▍    | 44/81 [02:57<02:20,  3.80s/it]Downloaded 0.04 GB:  54%|█████▍    | 44/81 [03:04<02:20,  3.80s/it]Downloaded 0.04 GB:  56%|█████▌    | 45/81 [03:04<02:50,  4.73s/it]Downloaded 0.04 GB:  56%|█████▌    | 45/81 [03:08<02:50,  4.73s/it]Downloaded 0.04 GB:  57%|█████▋    | 46/81 [03:08<02:31,  4.34s/it]Downloaded 0.05 GB:  57%|█████▋    | 46/81 [03:12<02:31,  4.34s/it]Downloaded 0.05 GB:  58%|█████▊    | 47/81 [03:12<02:26,  4.32s/it]Downloaded 0.05 GB:  58%|█████▊    | 47/81 [03:16<02:26,  4.32s/it]Downloaded 0.05 GB:  59%|█████▉    | 48/81 [03:16<02:24,  4.38s/it]Downloaded 0.05 GB:  59%|█████▉    | 48/81 [03:21<02:24,  4.38s/it]Downloaded 0.05 GB:  60%|██████    | 49/81 [03:21<02:23,  4.47s/it]Downloaded 0.05 GB:  60%|██████    | 49/81 [03:25<02:23,  4.47s/it]Downloaded 0.05 GB:  62%|██████▏   | 50/81 [03:25<02:10,  4.21s/it]Downloaded 0.05 GB:  62%|██████▏   | 50/81 [03:27<02:10,  4.21s/it]Downloaded 0.05 GB:  63%|██████▎   | 51/81 [03:27<01:45,  3.52s/it]Downloaded 0.05 GB:  63%|██████▎   | 51/81 [03:28<01:45,  3.52s/it]Downloaded 0.05 GB:  64%|██████▍   | 52/81 [03:28<01:25,  2.95s/it]Downloaded 0.05 GB:  64%|██████▍   | 52/81 [03:31<01:25,  2.95s/it]Downloaded 0.05 GB:  65%|██████▌   | 53/81 [03:31<01:18,  2.79s/it]Downloaded 0.05 GB:  65%|██████▌   | 53/81 [03:34<01:18,  2.79s/it]Downloaded 0.05 GB:  67%|██████▋   | 54/81 [03:34<01:17,  2.87s/it]Downloaded 0.05 GB:  67%|██████▋   | 54/81 [03:41<01:17,  2.87s/it]Downloaded 0.05 GB:  68%|██████▊   | 55/81 [03:41<01:50,  4.25s/it]Downloaded 0.05 GB:  68%|██████▊   | 55/81 [03:45<01:50,  4.25s/it]Downloaded 0.05 GB:  69%|██████▉   | 56/81 [03:45<01:45,  4.22s/it]Downloaded 0.06 GB:  69%|██████▉   | 56/81 [03:50<01:45,  4.22s/it]Downloaded 0.06 GB:  70%|███████   | 57/81 [03:50<01:40,  4.21s/it]Downloaded 0.06 GB:  70%|███████   | 57/81 [03:53<01:40,  4.21s/it]Downloaded 0.06 GB:  72%|███████▏  | 58/81 [03:53<01:33,  4.07s/it]Downloaded 0.06 GB:  72%|███████▏  | 58/81 [03:56<01:33,  4.07s/it]Downloaded 0.06 GB:  73%|███████▎  | 59/81 [03:56<01:23,  3.79s/it]Downloaded 0.06 GB:  73%|███████▎  | 59/81 [04:01<01:23,  3.79s/it]Downloaded 0.06 GB:  74%|███████▍  | 60/81 [04:01<01:21,  3.87s/it]Downloaded 0.06 GB:  74%|███████▍  | 60/81 [04:04<01:21,  3.87s/it]Downloaded 0.06 GB:  75%|███████▌  | 61/81 [04:04<01:16,  3.84s/it]Downloaded 0.06 GB:  75%|███████▌  | 61/81 [04:08<01:16,  3.84s/it]Downloaded 0.06 GB:  77%|███████▋  | 62/81 [04:08<01:09,  3.67s/it]Downloaded 0.06 GB:  77%|███████▋  | 62/81 [04:11<01:09,  3.67s/it]Downloaded 0.06 GB:  78%|███████▊  | 63/81 [04:11<01:04,  3.60s/it]Downloaded 0.06 GB:  78%|███████▊  | 63/81 [04:14<01:04,  3.60s/it]Downloaded 0.06 GB:  79%|███████▉  | 64/81 [04:14<00:59,  3.50s/it]Downloaded 0.06 GB:  79%|███████▉  | 64/81 [04:17<00:59,  3.50s/it]Downloaded 0.06 GB:  80%|████████  | 65/81 [04:17<00:53,  3.33s/it]Downloaded 0.06 GB:  80%|████████  | 65/81 [04:23<00:53,  3.33s/it]Downloaded 0.06 GB:  81%|████████▏ | 66/81 [04:23<01:00,  4.05s/it]Downloaded 0.07 GB:  81%|████████▏ | 66/81 [04:29<01:00,  4.05s/it]Downloaded 0.07 GB:  83%|████████▎ | 67/81 [04:29<01:05,  4.69s/it]Downloaded 0.07 GB:  83%|████████▎ | 67/81 [04:33<01:05,  4.69s/it]Downloaded 0.07 GB:  84%|████████▍ | 68/81 [04:33<00:56,  4.32s/it]Downloaded 0.07 GB:  84%|████████▍ | 68/81 [04:36<00:56,  4.32s/it]Downloaded 0.07 GB:  85%|████████▌ | 69/81 [04:36<00:48,  4.06s/it]Downloaded 0.07 GB:  85%|████████▌ | 69/81 [04:41<00:48,  4.06s/it]Downloaded 0.07 GB:  86%|████████▋ | 70/81 [04:41<00:46,  4.23s/it]Downloaded 0.07 GB:  86%|████████▋ | 70/81 [04:45<00:46,  4.23s/it]Downloaded 0.07 GB:  88%|████████▊ | 71/81 [04:45<00:43,  4.36s/it]Downloaded 0.07 GB:  88%|████████▊ | 71/81 [04:49<00:43,  4.36s/it]Downloaded 0.07 GB:  89%|████████▉ | 72/81 [04:49<00:36,  4.09s/it]Downloaded 0.07 GB:  89%|████████▉ | 72/81 [04:53<00:36,  4.09s/it]Downloaded 0.07 GB:  90%|█████████ | 73/81 [04:53<00:32,  4.05s/it]Downloaded 0.07 GB:  90%|█████████ | 73/81 [05:01<00:32,  4.05s/it]Downloaded 0.07 GB:  91%|█████████▏| 74/81 [05:01<00:36,  5.17s/it]Downloaded 0.07 GB:  91%|█████████▏| 74/81 [05:04<00:36,  5.17s/it]Downloaded 0.07 GB:  93%|█████████▎| 75/81 [05:04<00:27,  4.63s/it]Downloaded 0.07 GB:  93%|█████████▎| 75/81 [05:07<00:27,  4.63s/it]Downloaded 0.07 GB:  94%|█████████▍| 76/81 [05:07<00:20,  4.06s/it]Downloaded 0.08 GB:  94%|█████████▍| 76/81 [05:10<00:20,  4.06s/it]Downloaded 0.08 GB:  95%|█████████▌| 77/81 [05:10<00:15,  3.84s/it]Downloaded 0.08 GB:  95%|█████████▌| 77/81 [05:14<00:15,  3.84s/it]Downloaded 0.08 GB:  96%|█████████▋| 78/81 [05:14<00:11,  3.76s/it]Downloaded 0.08 GB:  96%|█████████▋| 78/81 [05:18<00:11,  3.76s/it]Downloaded 0.08 GB:  98%|█████████▊| 79/81 [05:18<00:08,  4.07s/it]Downloaded 0.08 GB:  98%|█████████▊| 79/81 [05:19<00:08,  4.07s/it]Downloaded 0.08 GB:  99%|█████████▉| 80/81 [05:19<00:03,  3.12s/it]Downloaded 0.08 GB:  99%|█████████▉| 80/81 [05:19<00:03,  3.12s/it]Downloaded 0.08 GB: 100%|██████████| 81/81 [05:19<00:00,  3.95s/it]
+Extracting cache_data/arxiv/ST/arxiv.zip
+Processing...
+Loading necessary files...
+This might take a while.
+Processing graphs...
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 17119.61it/s]
+Converting graphs into PyG objects...
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 3068.25it/s]
+Saving...
+Done!
+/data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torch_geometric/data/in_memory_dataset.py:284: UserWarning: It is not recommended to directly access the internal storage format `data` of an 'InMemoryDataset'. If you are absolutely certain what you are doing, access the internal storage via `InMemoryDataset._data` instead to suppress this warning. Alternatively, you can access stacked individual attributes of every graph via `dataset.{attr_name}`.
+  warnings.warn(msg)
+/data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torch_geometric/data/in_memory_dataset.py:284: UserWarning: It is not recommended to directly access the internal storage format `data` of an 'InMemoryDataset'. If you are absolutely certain what you are doing, access the internal storage via `InMemoryDataset._data` instead to suppress this warning. Alternatively, you can access stacked individual attributes of every graph via `dataset.{attr_name}`.
+  warnings.warn(msg)
+Saving...
+Done!
+{
+  "report_version": 3,
+  "mode": "offline_heat_style",
+  "strict_heat_reproduction": false,
+  "heat_style_comparable": false,
+  "embedding_cache_identity_verified": false,
+  "task_names": [
+    "arxiv"
+  ],
+  "split": "test",
+  "loader_index": 0,
+  "full_loader": false,
+  "full_dataset_sampling": true,
+  "requested_batch_num": 1,
+  "configured_sample_size": -1,
+  "device": "cuda:0",
+  "device_name": "NVIDIA H100 PCIe",
+  "torch_version": "2.1.2+cu118",
+  "model_dtype": "torch.float32",
+  "llm_name": "ST",
+  "gnn_model": "PyGRGCNEdge",
+  "emb_dim": 768,
+  "num_layers": 6,
+  "JK": "last",
+  "rwpe": null,
+  "dropout": 0.0,
+  "max_nodes_per_hop": 100,
+  "configured_max_nodes_per_hop": 100,
+  "seed": 1,
+  "graph_batch_size": 64,
+  "text_batch_size": 100,
+  "max_text_length": 500,
+  "num_workers": 0,
+  "repeats": 1,
+  "warmup_batches_requested": 1,
+  "warmup_batches_executed": 1,
+  "encode_warmup_batches_requested": 1,
+  "encode_warmup_texts": 100,
+  "checkpoint": null,
+  "checkpoint_loaded": false,
+  "weights": "random task-model initialization",
+  "sampling_hops": [
+    {
+      "dataset_type": "SubgraphHierDataset",
+      "original_hops": 2,
+      "effective_hops": 2,
+      "max_nodes_per_hop": 100
+    }
+  ],
+  "text_manifest": [
+    {
+      "dataset": "arxiv",
+      "text_path": "cache_data/arxiv/ST/processed/texts.pkl",
+      "text_entries": 172588,
+      "text_leaf_groups": 5,
+      "text_encoder_micro_batches": 1730
+    }
+  ],
+  "encoded_text_entries": 172588,
+  "text_leaf_groups": 5,
+  "text_encoder_micro_batches": 1730,
+  "measured_batches": 1,
+  "measured_graphs": 64,
+  "measured_nodes": 8391,
+  "measured_edges": 27596,
+  "output_values": 2560,
+  "workload_size_consistent_across_repeats": true,
+  "encode_seconds": 230.461300177034,
+  "gnn_seconds": 0.014465344429016114,
+  "gnn_core_seconds": 0.013907327651977539,
+  "other_seconds": 0.18500733625888824,
+  "downstream_pipeline_seconds": 0.19947268068790436,
+  "downstream_device_seconds": 0.014465344429016114,
+  "profiled_total_seconds": 230.6607728577219,
+  "encode_ratio": 0.9991352119468925,
+  "gnn_ratio": 6.271263314433941e-05,
+  "other_ratio": 0.0008020754199631768,
+  "encode_percent": 99.91352119468925,
+  "gnn_percent": 0.006271263314433942,
+  "other_percent": 0.08020754199631769,
+  "gnn_core_percent_of_profiled_total": 0.006029342345330636,
+  "gnn_seconds_per_batch": 0.014465344429016114,
+  "gnn_core_seconds_per_batch": 0.013907327651977539,
+  "timing_stats": {
+    "encode_seconds": {
+      "median": 230.461300177034,
+      "q1": 230.461300177034,
+      "q3": 230.461300177034,
+      "iqr": 0.0,
+      "min": 230.461300177034,
+      "max": 230.461300177034,
+      "samples": [
+        230.461300177034
+      ]
+    },
+    "gnn_seconds": {
+      "median": 0.014465344429016114,
+      "q1": 0.014465344429016114,
+      "q3": 0.014465344429016114,
+      "iqr": 0.0,
+      "min": 0.014465344429016114,
+      "max": 0.014465344429016114,
+      "samples": [
+        0.014465344429016114
+      ]
+    },
+    "gnn_core_seconds": {
+      "median": 0.013907327651977539,
+      "q1": 0.013907327651977539,
+      "q3": 0.013907327651977539,
+      "iqr": 0.0,
+      "min": 0.013907327651977539,
+      "max": 0.013907327651977539,
+      "samples": [
+        0.013907327651977539
+      ]
+    },
+    "other_seconds": {
+      "median": 0.18500733625888824,
+      "q1": 0.18500733625888824,
+      "q3": 0.18500733625888824,
+      "iqr": 0.0,
+      "min": 0.18500733625888824,
+      "max": 0.18500733625888824,
+      "samples": [
+        0.18500733625888824
+      ]
+    },
+    "downstream_pipeline_seconds": {
+      "median": 0.19947268068790436,
+      "q1": 0.19947268068790436,
+      "q3": 0.19947268068790436,
+      "iqr": 0.0,
+      "min": 0.19947268068790436,
+      "max": 0.19947268068790436,
+      "samples": [
+        0.19947268068790436
+      ]
+    },
+    "downstream_device_seconds": {
+      "median": 0.014465344429016114,
+      "q1": 0.014465344429016114,
+      "q3": 0.014465344429016114,
+      "iqr": 0.0,
+      "min": 0.014465344429016114,
+      "max": 0.014465344429016114,
+      "samples": [
+        0.014465344429016114
+      ]
+    },
+    "loader_wait_seconds": {
+      "median": 0.17420945316553116,
+      "q1": 0.17420945316553116,
+      "q3": 0.17420945316553116,
+      "iqr": 0.0,
+      "min": 0.17420945316553116,
+      "max": 0.17420945316553116,
+      "samples": [
+        0.17420945316553116
+      ]
+    },
+    "device_transfer_seconds": {
+      "median": 0.008210270881652831,
+      "q1": 0.008210270881652831,
+      "q3": 0.008210270881652831,
+      "iqr": 0.0,
+      "min": 0.008210270881652831,
+      "max": 0.008210270881652831,
+      "samples": [
+        0.008210270881652831
+      ]
+    },
+    "paired_profiled_total_seconds": {
+      "median": 230.6607728577219,
+      "q1": 230.6607728577219,
+      "q3": 230.6607728577219,
+      "iqr": 0.0,
+      "min": 230.6607728577219,
+      "max": 230.6607728577219,
+      "samples": [
+        230.6607728577219
+      ]
+    }
+  },
+  "runs": [
+    {
+      "repeat": 1,
+      "encode_seconds": 230.461300177034,
+      "pipeline_wall_seconds": 0.19947268068790436,
+      "gnn_seconds": 0.014465344429016114,
+      "gnn_core_seconds": 0.013907327651977539,
+      "other_seconds": 0.18500733625888824,
+      "downstream_device_seconds": 0.014465344429016114,
+      "downstream_noncore_device_seconds": 0.0005580167770385756,
+      "device_pipeline_seconds": 0.022675615310668945,
+      "device_transfer_seconds": 0.008210270881652831,
+      "loader_wait_seconds": 0.17420945316553116,
+      "measured_batches": 1,
+      "measured_graphs": 64,
+      "measured_nodes": 8391,
+      "measured_edges": 27596,
+      "output_values": 2560,
+      "nodes_per_batch": {
+        "median": 8391.0,
+        "q1": 8391.0,
+        "q3": 8391.0,
+        "iqr": 0.0,
+        "min": 8391.0,
+        "max": 8391.0
+      },
+      "edges_per_batch": {
+        "median": 27596.0,
+        "q1": 27596.0,
+        "q3": 27596.0,
+        "iqr": 0.0,
+        "min": 27596.0,
+        "max": 27596.0
+      },
+      "other_was_clamped": false,
+      "encode_gpu_peak_allocated_bytes": 4392042496,
+      "encode_gpu_peak_increment_bytes": 4091899904,
+      "graph_gpu_peak_allocated_bytes": 673107968,
+      "graph_gpu_peak_increment_bytes": 542673408,
+      "profiled_total_seconds": 230.6607728577219,
+      "encode_percent": 99.91352119468925,
+      "gnn_percent": 0.006271263314433941,
+      "other_percent": 0.08020754199631769
+    }
+  ],
+  "encode_scope": "all text entries in each base dataset texts.pkl: tokenizer + Transformer + pooling + embedding transfer to CPU; disk I/O and cache construction are excluded",
+  "gnn_scope": "full model(batch) device execution: input projection, optional RWPE/JK logic, PyGRGCNEdge, and prediction head",
+  "gnn_core_scope": "model.model (PyGRGCNEdge) device execution; diagnostic only",
+  "other_scope": "full selected-loader wall time minus full GNN device execution; includes sampling, collate, H2D, and host/runtime overhead on the critical path",
+  "ratio_scope": "additive phase profile: global encode plus complete selected-loader inference; not one continuous cache-build-to-prediction run",
+  "representative_value": "each phase uses its median over repeats; percentages use the sum of those phase medians",
+  "embedding_replay_note": "Timed embeddings are discarded. GNN inference consumes the existing offline cache built with the configured encoder, so profiled_total does not include writing or attaching the newly encoded features.",
+  "metric_key": null,
+  "metric_name": null,
+  "metric_value": null,
+  "metric_state": null,
+  "metric_scope": "skipped by --skip-metric",
+  "encoder_model_load_seconds_excluded": 3.0705701638944447,
+  "task_model_load_seconds_excluded": 0.13538548909127712,
+  "data_preparation_seconds_excluded": 1175.8962156660855,
+  "warnings": [
+    "No checkpoint was loaded; timing is valid, but the task metric uses random weights.",
+    "Global encoding is compared with only part of the graph loader; do not compare this ratio with HEAT.",
+    "HEAT-style reporting should use --split test --loader-index 0 --batch-num -1.",
+    "The repository cache has no encoder fingerprint metadata, so matching the offline embedding cache to llm_name, max length, model revision, and pooling configuration must be verified manually."
+  ]
+}

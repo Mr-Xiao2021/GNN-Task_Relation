@@ -1,0 +1,465 @@
+[2026-09-19 23:50:08,781] [INFO] [real_accelerator.py:161:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+/data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torch_geometric/data/in_memory_dataset.py:284: UserWarning: It is not recommended to directly access the internal storage format `data` of an 'InMemoryDataset'. If you are absolutely certain what you are doing, access the internal storage via `InMemoryDataset._data` instead to suppress this warning. Alternatively, you can access stacked individual attributes of every graph via `dataset.{attr_name}`.
+  warnings.warn(msg)
+/data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torchmetrics/utilities/prints.py:36: UserWarning: No negative samples in targets, false positive value should be meaningless. Returning zero tensor in false positive score
+  warnings.warn(*args, **kwargs)
+/data1/xxr_data/new_conda/ofa/lib/python3.9/site-packages/torchmetrics/utilities/prints.py:36: UserWarning: No positive samples in targets, true positive value should be meaningless. Returning zero tensor in true positive score
+  warnings.warn(*args, **kwargs)
+{
+  "report_version": 3,
+  "mode": "offline_heat_style",
+  "strict_heat_reproduction": false,
+  "heat_style_comparable": false,
+  "embedding_cache_identity_verified": false,
+  "task_names": [
+    "cora_link"
+  ],
+  "split": "test",
+  "loader_index": 0,
+  "full_loader": true,
+  "full_dataset_sampling": true,
+  "requested_batch_num": -1,
+  "configured_sample_size": -1,
+  "device": "cuda:0",
+  "device_name": "NVIDIA H100 PCIe",
+  "torch_version": "2.1.2+cu118",
+  "model_dtype": "torch.float32",
+  "llm_name": "ST",
+  "gnn_model": "PyGRGCNEdge",
+  "emb_dim": 768,
+  "num_layers": 6,
+  "JK": "last",
+  "rwpe": null,
+  "dropout": 0.0,
+  "max_nodes_per_hop": 100,
+  "configured_max_nodes_per_hop": 100,
+  "seed": 1,
+  "graph_batch_size": 64,
+  "text_batch_size": 100,
+  "max_text_length": 500,
+  "num_workers": 0,
+  "repeats": 5,
+  "warmup_batches_requested": 5,
+  "warmup_batches_executed": 5,
+  "encode_warmup_batches_requested": 1,
+  "encode_warmup_texts": 100,
+  "checkpoint": null,
+  "checkpoint_loaded": false,
+  "weights": "random task-model initialization",
+  "sampling_hops": [
+    {
+      "dataset_type": "SubgraphLinkHierDataset",
+      "original_hops": 3,
+      "effective_hops": 2,
+      "max_nodes_per_hop": 100
+    }
+  ],
+  "text_manifest": [
+    {
+      "dataset": "Cora",
+      "text_path": "cache_data/Cora/ST/processed/texts.pkl",
+      "text_entries": 2821,
+      "text_leaf_groups": 5,
+      "text_encoder_micro_batches": 33
+    }
+  ],
+  "encoded_text_entries": 2821,
+  "text_leaf_groups": 5,
+  "text_encoder_micro_batches": 33,
+  "measured_batches": 17,
+  "measured_graphs": 1056,
+  "measured_nodes": 59353,
+  "measured_edges": 175302,
+  "output_values": 2112,
+  "workload_size_consistent_across_repeats": true,
+  "encode_seconds": 3.3632563361898065,
+  "gnn_seconds": 0.16792131423950196,
+  "gnn_core_seconds": 0.16101481628417968,
+  "other_seconds": 1.4615773444622755,
+  "downstream_pipeline_seconds": 1.6294986587017775,
+  "downstream_device_seconds": 0.16792131423950196,
+  "profiled_total_seconds": 4.992754994891584,
+  "encode_ratio": 0.6736273539620861,
+  "gnn_ratio": 0.033632997095053394,
+  "other_ratio": 0.2927396489428605,
+  "encode_percent": 67.3627353962086,
+  "gnn_percent": 3.3632997095053394,
+  "other_percent": 29.27396489428605,
+  "gnn_core_percent_of_profiled_total": 3.2249693095079675,
+  "gnn_seconds_per_batch": 0.009877724367029527,
+  "gnn_core_seconds_per_batch": 0.009471459781422335,
+  "timing_stats": {
+    "encode_seconds": {
+      "median": 3.3632563361898065,
+      "q1": 3.361079663038254,
+      "q3": 3.4773429851047695,
+      "iqr": 0.11626332206651568,
+      "min": 3.3568652770482004,
+      "max": 3.558322411030531,
+      "samples": [
+        3.3632563361898065,
+        3.361079663038254,
+        3.558322411030531,
+        3.3568652770482004,
+        3.4773429851047695
+      ]
+    },
+    "gnn_seconds": {
+      "median": 0.16792131423950196,
+      "q1": 0.16774188995361328,
+      "q3": 0.16810310363769532,
+      "iqr": 0.00036121368408204013,
+      "min": 0.16708681726455687,
+      "max": 0.1688514223098755,
+      "samples": [
+        0.16774188995361328,
+        0.16810310363769532,
+        0.16792131423950196,
+        0.1688514223098755,
+        0.16708681726455687
+      ]
+    },
+    "gnn_core_seconds": {
+      "median": 0.16101481628417968,
+      "q1": 0.16093094301223754,
+      "q3": 0.1613107852935791,
+      "iqr": 0.0003798422813415525,
+      "min": 0.16042060947418213,
+      "max": 0.16208134269714355,
+      "samples": [
+        0.16093094301223754,
+        0.1613107852935791,
+        0.16101481628417968,
+        0.16208134269714355,
+        0.16042060947418213
+      ]
+    },
+    "other_seconds": {
+      "median": 1.4615773444622755,
+      "q1": 1.458763151731342,
+      "q3": 1.4652802603133024,
+      "iqr": 0.006517108581960418,
+      "min": 1.4534998378381134,
+      "max": 1.487144356239587,
+      "samples": [
+        1.487144356239587,
+        1.4652802603133024,
+        1.4615773444622755,
+        1.458763151731342,
+        1.4534998378381134
+      ]
+    },
+    "downstream_pipeline_seconds": {
+      "median": 1.6294986587017775,
+      "q1": 1.6276145740412176,
+      "q3": 1.6333833639509976,
+      "iqr": 0.0057687899097800255,
+      "min": 1.6205866551026702,
+      "max": 1.6548862461932003,
+      "samples": [
+        1.6548862461932003,
+        1.6333833639509976,
+        1.6294986587017775,
+        1.6276145740412176,
+        1.6205866551026702
+      ]
+    },
+    "downstream_device_seconds": {
+      "median": 0.16792131423950196,
+      "q1": 0.16774188995361328,
+      "q3": 0.16810310363769532,
+      "iqr": 0.00036121368408204013,
+      "min": 0.16708681726455687,
+      "max": 0.1688514223098755,
+      "samples": [
+        0.16774188995361328,
+        0.16810310363769532,
+        0.16792131423950196,
+        0.1688514223098755,
+        0.16708681726455687
+      ]
+    },
+    "loader_wait_seconds": {
+      "median": 1.38147704442963,
+      "q1": 1.378903588745743,
+      "q3": 1.3856381285004318,
+      "iqr": 0.00673453975468874,
+      "min": 1.3728321339003742,
+      "max": 1.4053308577276766,
+      "samples": [
+        1.4053308577276766,
+        1.3856381285004318,
+        1.38147704442963,
+        1.378903588745743,
+        1.3728321339003742
+      ]
+    },
+    "device_transfer_seconds": {
+      "median": 0.07690848350524904,
+      "q1": 0.07680127906799317,
+      "q3": 0.07700991535186766,
+      "iqr": 0.0002086362838744915,
+      "min": 0.07658586025238037,
+      "max": 0.07770604753494265,
+      "samples": [
+        0.07680127906799317,
+        0.07658586025238037,
+        0.07700991535186766,
+        0.07690848350524904,
+        0.07770604753494265
+      ]
+    },
+    "paired_profiled_total_seconds": {
+      "median": 5.018142582383007,
+      "q1": 4.994463026989251,
+      "q3": 5.09792964020744,
+      "iqr": 0.10346661321818829,
+      "min": 4.984479851089418,
+      "max": 5.187821069732308,
+      "samples": [
+        5.018142582383007,
+        4.994463026989251,
+        5.187821069732308,
+        4.984479851089418,
+        5.09792964020744
+      ]
+    }
+  },
+  "runs": [
+    {
+      "repeat": 1,
+      "encode_seconds": 3.3632563361898065,
+      "pipeline_wall_seconds": 1.6548862461932003,
+      "gnn_seconds": 0.16774188995361328,
+      "gnn_core_seconds": 0.16093094301223754,
+      "other_seconds": 1.487144356239587,
+      "downstream_device_seconds": 0.16774188995361328,
+      "downstream_noncore_device_seconds": 0.0068109469413757395,
+      "device_pipeline_seconds": 0.24454316902160644,
+      "device_transfer_seconds": 0.07680127906799317,
+      "loader_wait_seconds": 1.4053308577276766,
+      "measured_batches": 17,
+      "measured_graphs": 1056,
+      "measured_nodes": 59353,
+      "measured_edges": 175302,
+      "output_values": 2112,
+      "nodes_per_batch": {
+        "median": 3498.0,
+        "q1": 3226.0,
+        "q3": 3946.0,
+        "iqr": 720.0,
+        "min": 1429.0,
+        "max": 4377.0
+      },
+      "edges_per_batch": {
+        "median": 10540.0,
+        "q1": 9086.0,
+        "q3": 11952.0,
+        "iqr": 2866.0,
+        "min": 4072.0,
+        "max": 13372.0
+      },
+      "other_was_clamped": false,
+      "encode_gpu_peak_allocated_bytes": 4392042496,
+      "encode_gpu_peak_increment_bytes": 4091899904,
+      "graph_gpu_peak_allocated_bytes": 426499072,
+      "graph_gpu_peak_increment_bytes": 296064512,
+      "profiled_total_seconds": 5.018142582383007,
+      "encode_percent": 67.02193652282931,
+      "gnn_percent": 3.3427087253857244,
+      "other_percent": 29.635354751784963
+    },
+    {
+      "repeat": 2,
+      "encode_seconds": 3.361079663038254,
+      "pipeline_wall_seconds": 1.6333833639509976,
+      "gnn_seconds": 0.16810310363769532,
+      "gnn_core_seconds": 0.1613107852935791,
+      "other_seconds": 1.4652802603133024,
+      "downstream_device_seconds": 0.16810310363769532,
+      "downstream_noncore_device_seconds": 0.006792318344116227,
+      "device_pipeline_seconds": 0.2446889638900757,
+      "device_transfer_seconds": 0.07658586025238037,
+      "loader_wait_seconds": 1.3856381285004318,
+      "measured_batches": 17,
+      "measured_graphs": 1056,
+      "measured_nodes": 59353,
+      "measured_edges": 175302,
+      "output_values": 2112,
+      "nodes_per_batch": {
+        "median": 3498.0,
+        "q1": 3226.0,
+        "q3": 3946.0,
+        "iqr": 720.0,
+        "min": 1429.0,
+        "max": 4377.0
+      },
+      "edges_per_batch": {
+        "median": 10540.0,
+        "q1": 9086.0,
+        "q3": 11952.0,
+        "iqr": 2866.0,
+        "min": 4072.0,
+        "max": 13372.0
+      },
+      "other_was_clamped": false,
+      "encode_gpu_peak_allocated_bytes": 4392042496,
+      "encode_gpu_peak_increment_bytes": 4091899904,
+      "graph_gpu_peak_allocated_bytes": 426499072,
+      "graph_gpu_peak_increment_bytes": 296064512,
+      "profiled_total_seconds": 4.994463026989251,
+      "encode_percent": 67.29611661705243,
+      "gnn_percent": 3.365789329689578,
+      "other_percent": 29.338094053257983
+    },
+    {
+      "repeat": 3,
+      "encode_seconds": 3.558322411030531,
+      "pipeline_wall_seconds": 1.6294986587017775,
+      "gnn_seconds": 0.16792131423950196,
+      "gnn_core_seconds": 0.16101481628417968,
+      "other_seconds": 1.4615773444622755,
+      "downstream_device_seconds": 0.16792131423950196,
+      "downstream_noncore_device_seconds": 0.006906497955322277,
+      "device_pipeline_seconds": 0.24493122959136962,
+      "device_transfer_seconds": 0.07700991535186766,
+      "loader_wait_seconds": 1.38147704442963,
+      "measured_batches": 17,
+      "measured_graphs": 1056,
+      "measured_nodes": 59353,
+      "measured_edges": 175302,
+      "output_values": 2112,
+      "nodes_per_batch": {
+        "median": 3498.0,
+        "q1": 3226.0,
+        "q3": 3946.0,
+        "iqr": 720.0,
+        "min": 1429.0,
+        "max": 4377.0
+      },
+      "edges_per_batch": {
+        "median": 10540.0,
+        "q1": 9086.0,
+        "q3": 11952.0,
+        "iqr": 2866.0,
+        "min": 4072.0,
+        "max": 13372.0
+      },
+      "other_was_clamped": false,
+      "encode_gpu_peak_allocated_bytes": 4392042496,
+      "encode_gpu_peak_increment_bytes": 4091899904,
+      "graph_gpu_peak_allocated_bytes": 426499072,
+      "graph_gpu_peak_increment_bytes": 296064512,
+      "profiled_total_seconds": 5.187821069732308,
+      "encode_percent": 68.58992172631235,
+      "gnn_percent": 3.236837045502934,
+      "other_percent": 28.173241228184704
+    },
+    {
+      "repeat": 4,
+      "encode_seconds": 3.3568652770482004,
+      "pipeline_wall_seconds": 1.6276145740412176,
+      "gnn_seconds": 0.1688514223098755,
+      "gnn_core_seconds": 0.16208134269714355,
+      "other_seconds": 1.458763151731342,
+      "downstream_device_seconds": 0.1688514223098755,
+      "downstream_noncore_device_seconds": 0.006770079612731933,
+      "device_pipeline_seconds": 0.24575990581512452,
+      "device_transfer_seconds": 0.07690848350524904,
+      "loader_wait_seconds": 1.378903588745743,
+      "measured_batches": 17,
+      "measured_graphs": 1056,
+      "measured_nodes": 59353,
+      "measured_edges": 175302,
+      "output_values": 2112,
+      "nodes_per_batch": {
+        "median": 3498.0,
+        "q1": 3226.0,
+        "q3": 3946.0,
+        "iqr": 720.0,
+        "min": 1429.0,
+        "max": 4377.0
+      },
+      "edges_per_batch": {
+        "median": 10540.0,
+        "q1": 9086.0,
+        "q3": 11952.0,
+        "iqr": 2866.0,
+        "min": 4072.0,
+        "max": 13372.0
+      },
+      "other_was_clamped": false,
+      "encode_gpu_peak_allocated_bytes": 4392042496,
+      "encode_gpu_peak_increment_bytes": 4091899904,
+      "graph_gpu_peak_allocated_bytes": 426499072,
+      "graph_gpu_peak_increment_bytes": 296064512,
+      "profiled_total_seconds": 4.984479851089418,
+      "encode_percent": 67.34635061900225,
+      "gnn_percent": 3.3875434820540193,
+      "other_percent": 29.266105898943735
+    },
+    {
+      "repeat": 5,
+      "encode_seconds": 3.4773429851047695,
+      "pipeline_wall_seconds": 1.6205866551026702,
+      "gnn_seconds": 0.16708681726455687,
+      "gnn_core_seconds": 0.16042060947418213,
+      "other_seconds": 1.4534998378381134,
+      "downstream_device_seconds": 0.16708681726455687,
+      "downstream_noncore_device_seconds": 0.006666207790374745,
+      "device_pipeline_seconds": 0.24479286479949952,
+      "device_transfer_seconds": 0.07770604753494265,
+      "loader_wait_seconds": 1.3728321339003742,
+      "measured_batches": 17,
+      "measured_graphs": 1056,
+      "measured_nodes": 59353,
+      "measured_edges": 175302,
+      "output_values": 2112,
+      "nodes_per_batch": {
+        "median": 3498.0,
+        "q1": 3226.0,
+        "q3": 3946.0,
+        "iqr": 720.0,
+        "min": 1429.0,
+        "max": 4377.0
+      },
+      "edges_per_batch": {
+        "median": 10540.0,
+        "q1": 9086.0,
+        "q3": 11952.0,
+        "iqr": 2866.0,
+        "min": 4072.0,
+        "max": 13372.0
+      },
+      "other_was_clamped": false,
+      "encode_gpu_peak_allocated_bytes": 4392042496,
+      "encode_gpu_peak_increment_bytes": 4091899904,
+      "graph_gpu_peak_allocated_bytes": 426499072,
+      "graph_gpu_peak_increment_bytes": 296064512,
+      "profiled_total_seconds": 5.09792964020744,
+      "encode_percent": 68.21088619346408,
+      "gnn_percent": 3.2775426311642453,
+      "other_percent": 28.511571175371678
+    }
+  ],
+  "encode_scope": "all text entries in each base dataset texts.pkl: tokenizer + Transformer + pooling + embedding transfer to CPU; disk I/O and cache construction are excluded",
+  "gnn_scope": "full model(batch) device execution: input projection, optional RWPE/JK logic, PyGRGCNEdge, and prediction head",
+  "gnn_core_scope": "model.model (PyGRGCNEdge) device execution; diagnostic only",
+  "other_scope": "full selected-loader wall time minus full GNN device execution; includes sampling, collate, H2D, and host/runtime overhead on the critical path",
+  "ratio_scope": "additive phase profile: global encode plus complete selected-loader inference; not one continuous cache-build-to-prediction run",
+  "representative_value": "each phase uses its median over repeats; percentages use the sum of those phase medians",
+  "embedding_replay_note": "Timed embeddings are discarded. GNN inference consumes the existing offline cache built with the configured encoder, so profiled_total does not include writing or attaching the newly encoded features.",
+  "metric_key": "test_cora_link_eval/auc",
+  "metric_name": "auc",
+  "metric_value": 0.4599851369857788,
+  "metric_state": "test_cora_link_eval",
+  "metric_scope": "separate untimed loader pass",
+  "encoder_model_load_seconds_excluded": 2.6005084747448564,
+  "task_model_load_seconds_excluded": 0.1654979740269482,
+  "data_preparation_seconds_excluded": 0.9456214113160968,
+  "warnings": [
+    "No checkpoint was loaded; timing is valid, but the task metric uses random weights.",
+    "Sampling hops were overridden only for this profiling process; the checkpoint may have been trained with another depth.",
+    "The repository cache has no encoder fingerprint metadata, so matching the offline embedding cache to llm_name, max length, model revision, and pooling configuration must be verified manually."
+  ]
+}

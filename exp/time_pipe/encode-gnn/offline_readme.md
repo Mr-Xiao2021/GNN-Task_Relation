@@ -250,3 +250,116 @@ GPU 型号 / checkpoint
 脚本记录 CUDA allocated memory 峰值，不记录系统内存峰值。Arxiv 等大数据集若发生主存不足或换页，时间结果也会被影响，应同时用系统监控记录 RSS 和 swap。
 
 不要把 `benchmark_loaded_g.py` 的单 batch eager 比例与这里的 offline 比例放在同一列直接比较。前者回答“一个 batch 在线重新编码有多慢”，这里回答“全局编码一次，再完成整个 test split 时的系统时间构成”。
+
+## 9. 六任务实验记录（2026-09-19 至 2026-09-20）
+
+本节记录在 `feat/np-encode` 分支提交 `51b34e7` 上执行的 HEAT 六任务实验。物理设备为 NVIDIA H100 PCIe GPU 1，通过 `CUDA_VISIBLE_DEVICES=1` 映射为脚本内的 `cuda:0`。六个任务串行执行，完整 runner 见 [run_offline_heat_six.sh](./logs/offline_heat_260919234746/run_offline_heat_six.sh)。
+
+### 9.1 实验配置
+
+所有正式任务使用相同的 profiling 参数：
+
+```text
+split=test
+loader_index=0
+batch_num=-1
+batch_size=64
+llm_b_size=100
+llm_max_length=500
+repeats=5
+warmup_batches=5
+encode_warmup_batches=1
+sampling_hops=2
+train_sample_size=-1
+num_workers=0
+llm_name=ST
+```
+
+Arxiv 和 WN18RR 在正式计时前没有 offline cache，因此先在独立进程中完成 cache-prep，再启动新的正式计时进程。Arxiv cache-prep 用时 1420 秒，WN18RR cache-prep 用时 27 秒；这些时间不进入下表任何阶段。
+
+| 任务 | Checkpoint | `heat_style_comparable` | Metric |
+| --- | --- | --- | ---: |
+| Cora Node | 已加载 | `true` | acc = 0.7016 |
+| Cora Link | 未加载 | `false` | 随机权重，不报告效果 |
+| PubMed Node | 已加载 | `true` | acc = 0.7191 |
+| PubMed Link | 未加载 | `false` | 随机权重，不报告效果 |
+| Arxiv | 未加载 | `false` | 随机权重，不报告效果 |
+| WN18RR | 未加载 | `false` | 随机权重，不报告效果 |
+
+未加载 checkpoint 的四项仍能提供算子与系统时间，但不属于完整的 HEAT-style 可比结果。六项的 `strict_heat_reproduction` 和 `embedding_cache_identity_verified` 均为 `false`；后者需要人工核对 cache 的 encoder 身份。
+
+### 9.2 三阶段与两阶段结果
+
+以下时间单位均为秒。`Encode`、`GNN` 和 `Other` 是各自 5 次完整 repeat 的中位数，括号内为 IQR。`GNN pipeline` 是本实验报告采用的两阶段派生口径：
+
+```text
+GNN pipeline = GNN + Other
+Profiled total = Encode + GNN pipeline
+```
+
+| 任务 | Encode median (IQR) | GNN median (IQR) | Other median (IQR) | GNN pipeline | Profiled total | Encode | GNN pipeline |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cora Node | 3.373 (0.012) | 0.321 (0.036) | 2.982 (0.539) | 3.303 | 6.676 | 50.53% | 49.47% |
+| Cora Link | 3.363 (0.116) | 0.168 (0.000) | 1.462 (0.007) | 1.629 | 4.993 | 67.36% | 32.64% |
+| PubMed Node | 31.608 (0.244) | 3.099 (0.081) | 30.313 (0.549) | 33.411 | 65.020 | 48.61% | 51.39% |
+| PubMed Link | 31.757 (0.176) | 1.739 (0.042) | 16.479 (1.026) | 18.218 | 49.976 | 63.55% | 36.45% |
+| Arxiv | 230.974 (0.256) | 11.568 (0.004) | 151.256 (0.875) | 162.824 | 393.798 | 58.65% | 41.35% |
+| WN18RR | 6.772 (0.100) | 0.581 (0.003) | 6.403 (0.145) | 6.984 | 13.756 | 49.23% | 50.77% |
+
+`GNN pipeline` 表示全局文本编码完成后的完整下游图推理关键路径，既包含 GPU 模型前向，也包含采样、collate、DataLoader 等待、H2D 和 host/runtime 开销。因此它适合与 `Encode` 构成两阶段系统占比，但不能解释为纯 GNN kernel 时间。纯 `PyGRGCNEdge` 的诊断字段是 `gnn_core_seconds`，它已经包含在 `GNN` 中，不能再次加到总时间。
+
+### 9.3 Workload
+
+下表是单次完整 loader repeat 的累计工作量。采样子图中的节点和边会跨 batch 重复出现，因此 `Nodes` 和 `Edges` 不是基础图的去重规模。
+
+| 任务 | Text entries | Encoder micro-batches | Batches | Graphs | Nodes | Edges |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cora Node | 2,821 | 33 | 33 | 2,068 | 80,712 | 234,126 |
+| Cora Link | 2,821 | 33 | 17 | 1,056 | 59,353 | 175,302 |
+| PubMed Node | 19,726 | 202 | 300 | 19,157 | 940,959 | 3,020,564 |
+| PubMed Link | 19,726 | 202 | 139 | 8,866 | 795,617 | 2,670,818 |
+| Arxiv | 172,588 | 1,730 | 760 | 48,603 | 6,552,487 | 22,644,838 |
+| WN18RR | 40,982 | 414 | 49 | 3,134 | 292,506 | 707,478 |
+
+六项均输出 `workload_size_consistent_across_repeats=true`，表示 5 次 repeat 的 batch、graph、node、edge 和输出规模一致，但不证明每次采样的实体身份逐项相同。
+
+### 9.4 表格列的代码依据
+
+| 展示列 | JSON 来源或公式 | 代码依据 |
+| --- | --- | --- |
+| `Encode` | `encode_seconds` | [`time_global_offline_encode()`](./offline_encode_gnn_time.py#L290) 在磁盘读取 `texts.pkl` 后同步 GPU，计时 `dataset.text2feature(texts)`；[`make_report()`](./offline_encode_gnn_time.py#L575) 对 5 次结果取中位数。包含 tokenizer、Transformer、pooling 和 embedding 回传 CPU，不含磁盘读取与 cache 写入。 |
+| `GNN` | `gnn_seconds` | [`time_model_batches()`](./offline_encode_gnn_time.py#L417) 在 `model(batch)` 前后记录 CUDA Event，最后将完整 loader 所有 batch 的 Event 时间相加；第 495 行赋给 `gnn_seconds`。包含 projection、可选 RWPE/JK、`PyGRGCNEdge` 和 prediction head。 |
+| `Other` | `other_seconds` | 同一函数先测完整 loader 墙钟 `pipeline_wall_seconds`，再在第 496 行计算 `max(0, pipeline_wall_seconds - gnn_seconds)`。因此包含采样、collate、loader wait、H2D 和 host/runtime 关键路径开销。 |
+| `GNN pipeline` | `gnn_seconds + other_seconds` | 本 README 的派生列，不是当前 JSON 的独立顶层字段。使用两个阶段各自的中位数相加，以便和顶层 `profiled_total_seconds` 保持同一代表值口径。 |
+| `Profiled total` | `profiled_total_seconds` | [`make_report()`](./offline_encode_gnn_time.py#L584) 先分别取三个阶段中位数，再执行 `encode_seconds + gnn_seconds + other_seconds`。它不是一次连续 cache-build-to-prediction 请求的实测延迟。 |
+| `Encode %` | `encode_percent` | `100 * encode_seconds / profiled_total_seconds`，对应第 588-593、782 行。 |
+| `GNN pipeline %` | `100 - encode_percent` | 本 README 的两阶段派生列，等价于 `100 * (gnn_seconds + other_seconds) / profiled_total_seconds`。 |
+| IQR | `timing_stats.<phase>.iqr` | `summarize()` 分别对每个阶段的 5 个样本计算 Q1、Q3 和 `Q3 - Q1`。阶段 IQR 不相加。 |
+| Batches/Graphs/Nodes/Edges | `measured_*` | [`time_model_batches()`](./offline_encode_gnn_time.py#L463) 在每个 batch 累加 `batch.num_graphs`、`batch.num_nodes` 和 `batch.num_edges`；报告阶段要求多次 workload 一致，否则返回分布并发出 warning。 |
+
+`timing_stats.downstream_pipeline_seconds` 是每次 repeat 中 `pipeline_wall_seconds` 的中位数；而上表 `GNN pipeline` 是 `median(GNN) + median(Other)`。由于中位数一般不满足可加性，两者可能有轻微差异。选择后者是为了严格满足当前顶层报告定义：
+
+```text
+Profiled total = median(Encode) + median(GNN) + median(Other)
+```
+
+runner 状态表中的进程总历时也不等于 `Profiled total`。进程总历时还包含 5 次重复、模型和 checkpoint 加载、数据初始化、warmup、独立 metric pass、清理等未纳入三阶段的工作。
+
+### 9.5 原始日志
+
+正式结果：
+
+- [Cora Node](./logs/offline_heat_260919234746/cora_node.log)
+- [Cora Link](./logs/offline_heat_260919234746/cora_link.log)
+- [PubMed Node](./logs/offline_heat_260919234746/pubmed_node.log)
+- [PubMed Link](./logs/offline_heat_260919234746/pubmed_link.log)
+- [Arxiv](./logs/offline_heat_260919234746/arxiv.log)
+- [WN18RR](./logs/offline_heat_260919234746/WN18RR.log)
+
+执行与 cache-prep 记录：
+
+- [Arxiv cache-prep](./logs/offline_heat_260919234746/arxiv_cache_prep.log)
+- [WN18RR cache-prep](./logs/offline_heat_260919234746/WN18RR_cache_prep.log)
+- [串行时间线](./logs/offline_heat_260919234746/launcher.log)
+- [任务状态表](./logs/offline_heat_260919234746/run_status.csv)
+- [最终 runner 状态](./logs/offline_heat_260919234746/runner.state)

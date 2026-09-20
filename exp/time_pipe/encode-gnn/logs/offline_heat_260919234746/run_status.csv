@@ -1,0 +1,9 @@
+task,phase,status,exit_code,duration_seconds,checkpoint,log
+cora_node,profile,success,0,49,/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-17 17:25:07.738700/full_cdm/e5t7x7gs/checkpoints/epoch=74-step=150.ckpt,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/cora_node.log
+cora_link,profile,success,0,40,none,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/cora_link.log
+pubmed_node,profile,success,0,372,/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-17 16:01:00.408337/full_cdm/tn7immv7/checkpoints/epoch=60-step=61.ckpt,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/pubmed_node.log
+pubmed_link,profile,success,0,364,none,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/pubmed_link.log
+arxiv,cache_prep,success,0,1420,none,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/arxiv_cache_prep.log
+arxiv,profile,success,0,2150,none,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/arxiv.log
+WN18RR,cache_prep,success,0,27,none,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/WN18RR_cache_prep.log
+WN18RR,profile,success,0,90,none,/data1/xxr_data/GNN/GNN-Task_Relation/exp/time_pipe/encode-gnn/results/offline_heat_260919234746/WN18RR.log

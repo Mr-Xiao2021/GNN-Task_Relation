@@ -288,7 +288,100 @@ Arxiv 和 WN18RR 在正式计时前没有 offline cache，因此先在独立进�
 
 未加载 checkpoint 的四项仍能提供算子与系统时间，但不属于完整的 HEAT-style 可比结果。六项的 `strict_heat_reproduction` 和 `embedding_cache_identity_verified` 均为 `false`；后者需要人工核对 cache 的 encoder 身份。
 
-### 9.2 三阶段与两阶段结果
+### 9.2 实际运行命令
+
+下面是本次实验实际生效的完整命令。Arxiv 和 WN18RR 因初始 cache 缺失，先各自在独立进程中执行一次 cache-prep；已有 cache 的 Cora 和 PubMed 没有执行该步骤。
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT=/data1/xxr_data/GNN/GNN-Task_Relation
+PYTHON_BIN=/data1/xxr_data/new_conda/ofa/bin/python
+GPU=1
+RESULT_DIR="$PROJECT_ROOT/exp/time_pipe/encode-gnn/results/offline_heat_260919234746"
+
+mkdir -p "$RESULT_DIR"
+cd "$PROJECT_ROOT"
+
+declare -A CHECKPOINTS=(
+  [cora_node]="$PROJECT_ROOT/saved_exp/2026-09-17 17:25:07.738700/full_cdm/e5t7x7gs/checkpoints/epoch=74-step=150.ckpt"
+  [cora_link]=""
+  [pubmed_node]="$PROJECT_ROOT/saved_exp/2026-09-17 16:01:00.408337/full_cdm/tn7immv7/checkpoints/epoch=60-step=61.ckpt"
+  [pubmed_link]=""
+  [arxiv]=""
+  [WN18RR]=""
+)
+
+declare -A CACHE_DIRS=(
+  [cora_node]="$PROJECT_ROOT/cache_data/Cora/ST/processed"
+  [cora_link]="$PROJECT_ROOT/cache_data/Cora/ST/processed"
+  [pubmed_node]="$PROJECT_ROOT/cache_data/Pubmed/ST/processed"
+  [pubmed_link]="$PROJECT_ROOT/cache_data/Pubmed/ST/processed"
+  [arxiv]="$PROJECT_ROOT/cache_data/arxiv/ST/processed"
+  [WN18RR]="$PROJECT_ROOT/cache_data/WN18RR/ST/processed"
+)
+
+TASKS=(cora_node cora_link pubmed_node pubmed_link arxiv WN18RR)
+
+for TASK in "${TASKS[@]}"; do
+  CACHE_DIR="${CACHE_DIRS[$TASK]}"
+  if [[ ! -f "$CACHE_DIR/texts.pkl" || ! -f "$CACHE_DIR/geometric_data_processed.pt" ]]; then
+    CUDA_VISIBLE_DEVICES="$GPU" \
+    TOKENIZERS_PARALLELISM=false \
+    PYTHONUNBUFFERED=1 \
+    "$PYTHON_BIN" exp/time_pipe/encode-gnn/offline_encode_gnn_time.py \
+      --split test \
+      --loader-index 0 \
+      --batch-num 1 \
+      --warmup-batches 1 \
+      --encode-warmup-batches 1 \
+      --repeats 1 \
+      --sampling-hops 2 \
+      --skip-metric \
+      --device cuda:0 \
+      task_names "$TASK" \
+      llm_name ST \
+      llm_max_length 500 \
+      batch_size 64 \
+      llm_b_size 100 \
+      train_sample_size -1 \
+      num_workers 0 \
+      > "$RESULT_DIR/${TASK}_cache_prep.log" 2>&1
+  fi
+
+  CHECKPOINT_ARGS=()
+  if [[ -n "${CHECKPOINTS[$TASK]}" ]]; then
+    CHECKPOINT_ARGS=(--checkpoint "${CHECKPOINTS[$TASK]}")
+  fi
+
+  CUDA_VISIBLE_DEVICES="$GPU" \
+  TOKENIZERS_PARALLELISM=false \
+  PYTHONUNBUFFERED=1 \
+  "$PYTHON_BIN" exp/time_pipe/encode-gnn/offline_encode_gnn_time.py \
+    "${CHECKPOINT_ARGS[@]}" \
+    --split test \
+    --loader-index 0 \
+    --batch-num -1 \
+    --warmup-batches 5 \
+    --encode-warmup-batches 1 \
+    --repeats 5 \
+    --sampling-hops 2 \
+    --device cuda:0 \
+    task_names "$TASK" \
+    llm_name ST \
+    llm_max_length 500 \
+    batch_size 64 \
+    llm_b_size 100 \
+    train_sample_size -1 \
+    num_workers 0 \
+    > "$RESULT_DIR/${TASK}.log" 2>&1
+done
+```
+
+归档的 [run_offline_heat_six.sh](./logs/offline_heat_260919234746/run_offline_heat_six.sh) 在上述有效命令外增加了 cache 存在性检查、逐任务状态记录和单项失败后继续执行，其 profiling 参数完全一致。
+
+### 9.3 三阶段与两阶段结果
 
 以下时间单位均为秒。`Encode`、`GNN` 和 `Other` 是各自 5 次完整 repeat 的中位数，括号内为 IQR。`GNN pipeline` 是本实验报告采用的两阶段派生口径：
 
@@ -308,7 +401,7 @@ Profiled total = Encode + GNN pipeline
 
 `GNN pipeline` 表示全局文本编码完成后的完整下游图推理关键路径，既包含 GPU 模型前向，也包含采样、collate、DataLoader 等待、H2D 和 host/runtime 开销。因此它适合与 `Encode` 构成两阶段系统占比，但不能解释为纯 GNN kernel 时间。纯 `PyGRGCNEdge` 的诊断字段是 `gnn_core_seconds`，它已经包含在 `GNN` 中，不能再次加到总时间。
 
-### 9.3 Workload
+### 9.4 Workload
 
 下表是单次完整 loader repeat 的累计工作量。采样子图中的节点和边会跨 batch 重复出现，因此 `Nodes` 和 `Edges` 不是基础图的去重规模。
 
@@ -323,7 +416,7 @@ Profiled total = Encode + GNN pipeline
 
 六项均输出 `workload_size_consistent_across_repeats=true`，表示 5 次 repeat 的 batch、graph、node、edge 和输出规模一致，但不证明每次采样的实体身份逐项相同。
 
-### 9.4 表格列的代码依据
+### 9.5 表格列的代码依据
 
 | 展示列 | JSON 来源或公式 | 代码依据 |
 | --- | --- | --- |
@@ -345,7 +438,7 @@ Profiled total = median(Encode) + median(GNN) + median(Other)
 
 runner 状态表中的进程总历时也不等于 `Profiled total`。进程总历时还包含 5 次重复、模型和 checkpoint 加载、数据初始化、warmup、独立 metric pass、清理等未纳入三阶段的工作。
 
-### 9.5 原始日志
+### 9.6 原始日志
 
 正式结果：
 

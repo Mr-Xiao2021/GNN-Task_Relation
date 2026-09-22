@@ -84,6 +84,30 @@ OFA-ind can be specified by
 python run_cdm.py task_names cora_link d_multiple 1 d_min_ratio 1
 ```
 
+## Local GNN checkpoints
+
+The following six task checkpoints are local experiment artifacts under the project root
+`/data1/xxr_data/GNN/GNN-Task_Relation`. They were trained with `load_texts=False` and
+`llm_trainable=False`, so the Lightning checkpoints contain the downstream task model
+(input projection, GNN, and prediction head), not a trainable LLM text encoder.
+
+| Task | Type | Epochs | W&B run | Best checkpoint (relative to the project root) |
+| --- | --- | ---: | --- | --- |
+| `cora_node` | Node classification | 300 | `cora_node_gnn_nodrop_ST_ofa1_260917172507` | `saved_exp/2026-09-17 17:25:07.738700/full_cdm/e5t7x7gs/checkpoints/epoch=74-step=150.ckpt` |
+| `cora_link` | Link prediction | 400 | `cora_link_gnn_ST_ofa1_260921180644` | `saved_exp/2026-09-21 18:06:44.432551/full_cdm/8x52rwr9/checkpoints/epoch=48-step=3479.ckpt` |
+| `pubmed_node` | Node classification | 300 | `pubmed_node_gnn_ST_ofa1_260917160100` | `saved_exp/2026-09-17 16:01:00.408337/full_cdm/tn7immv7/checkpoints/epoch=60-step=61.ckpt` |
+| `pubmed_link` | Link prediction | 300 | `pubmed_link_gnn_ST_ofa1_260921190558` | `saved_exp/2026-09-21 19:05:58.361032/full_cdm/b9rejg4r/checkpoints/epoch=10-step=6479.ckpt` |
+| `arxiv` | Node classification | 200 | `arxiv_gnn_ST_ofa1_260921204410` | `saved_exp/2026-09-21 20:44:10.956571/full_cdm/hk1d9kki/checkpoints/epoch=6-step=4977.ckpt` |
+| `WN18RR` | Knowledge-graph link prediction | 200 | `WN18RR_gnn_ST_ofa1_260922124533` | `saved_exp/2026-09-22 12:45:33.439358/full_cdm/pyb5uw7f/checkpoints/epoch=32-step=22407.ckpt` |
+
+Each checkpoint directory also contains `last.ckpt`. Use the table's `epoch=...-step=...`
+checkpoint for inference because it is the best checkpoint selected by the validation metric;
+use `last.ckpt` only when the final training epoch is explicitly required.
+
+`saved_exp/` is intentionally excluded by `.gitignore`. These files remain available on the
+local machine but are not stored in Git; copy or back them up separately before moving the
+repository to another machine.
+
 ## Low resource experiments
 
 To run the few-shot and zero-shot experiments

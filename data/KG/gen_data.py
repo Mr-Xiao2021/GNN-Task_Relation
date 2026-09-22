@@ -77,6 +77,26 @@ def read_knowledge_graph(files, name):
         print(unknown_entity)
         converted_triplets[file_type] = [edges, edge_types]
 
+    """
+    以WN18RR为例
+    converted_triplets = {
+        "train": [
+            [[1234, 5678], [9012, 3456], ...],   # edges: 86,835 对 [头实体idx, 尾实体idx]
+            [0, 3, 1, ...]                        # edge_types: 86,835 个关系类型ID (0~10)
+        ],
+        "valid": [
+            [[...], ...],    # 3,034 条
+            [...]
+        ],
+        "test": [
+            [[...], ...],    # 3,134 条
+            [...]
+        ],
+    }
+
+    rel_list     = ["_hypernym", "_derivationally_related_form", ..., "_similar_to"]  # 11个
+    relation2id  = {"_hypernym": 0, "_derivationally_related_form": 1, ..., "_similar_to": 10}
+    """
     new_data = pyg.data.data.Data(x=torch.zeros([len(text_lst), 1]),
         edge_index=torch.tensor(converted_triplets["train"][0]).T,
         edge_types=torch.tensor(converted_triplets["train"][1]), )

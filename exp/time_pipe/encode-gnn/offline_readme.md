@@ -20,6 +20,13 @@ profiled_total = encode + gnn + other
 
 `gnn_core_seconds` 另外记录纯 `model.model`（`PyGRGCNEdge`）的设备时间，用来判断 GNN 内部与 projection/head 的开销；它是诊断字段，不参与上述三阶段占比。
 
+脚本还会在无插桩的 Encode repeats 完成后，额外复放一次相同的
+`dataset.text2feature(texts)`，将 SentenceEncoder 内部聚合为 Transformer forward、
+全层 QKV projection、Attention 和 FFN。结果位于 `transformer_profile`，该诊断 pass
+不参与 `encode_seconds` 或 `profiled_total_seconds`。如需完全跳过，可传入
+`--skip-transformer-profile`。该组件诊断只实现单卡 CUDA Event 计时；CPU 运行时
+必须使用这个跳过参数，原有 Encode/GNN/Other 逻辑仍可照常执行。
+
 `encode` 使用同步墙钟时间，`gnn` 使用 CUDA Event，GNN 前后的 host、采样、collate 和 H2D 被归入 `other`。这是三阶段关键路径拆分，不要丢掉 `other` 后再把 `encode` 与 `gnn` 归一化成两项比例。
 
 以下内容不计入三阶段占比：模型加载、checkpoint 加载、数据集初始化、`texts.pkl` 磁盘读取、首次缓存构建、warmup，以及 metric 计算。
@@ -214,6 +221,7 @@ bash /path/to/the/runner.sh
 | `gnn_percent` | `gnn_seconds / profiled_total_seconds` |
 | `other_percent` | `other_seconds / profiled_total_seconds` |
 | `timing_stats` | 每个阶段的 samples、median、Q1、Q3、IQR、min 和 max |
+| `transformer_profile` | 独立诊断 replay 的 Transformer 总时间及全层 QKV、Attention、FFN 聚合时间；不提供逐层结果 |
 | `runs` | 每次 repeat 的原始时间和 workload |
 | `encoded_text_entries` | `texts.pkl` 中被编码的文本条目数，不是去重文本数 |
 | `text_encoder_micro_batches` | 按各 leaf text group 分批后的编码 micro-batch 数 |
@@ -225,6 +233,13 @@ bash /path/to/the/runner.sh
 | `metric_value` | 单独未计时 pass 的任务指标 |
 
 顶层代表时间使用各阶段自己的 median，再由三个 median 计算百分比，保证三项百分比相加为 100%。`timing_stats.paired_profiled_total_seconds` 另外保留按 repeat 配对后的阶段相加分布。
+
+`transformer_profile.attention_seconds` 定义为 inclusive Attention 减去 Q/K/V
+projection；它还包含 O projection、dropout，以及部分架构的 residual/norm，不能解释为
+纯 `QK^T + softmax + AV` kernel 时间。更完整的字段说明见
+[`exp/encode/tf_profile/README.md`](../../encode/tf_profile/README.md)。
+组件边界在 BERT、DistilBERT 和 Llama 之间不同，这组细分数据只用于同一 Encoder
+架构下不同精度或实现策略的对比，不用于跨架构比较 Attention/FFN 百分比。
 
 `heat_style_comparable=true` 表示当前命令满足：完整 test dataset、完整 loader、2-hop、已加载 checkpoint、`num_workers=0`，且各 repeat 的汇总 workload 规模一致。它仍不代表采样身份逐项相同或 cache 身份已经自动验证；由于硬件、后端模型和论文未公开参数仍有差异，`strict_heat_reproduction` 固定为 `false`。
 

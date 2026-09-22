@@ -59,6 +59,7 @@ class SentenceEncoder:
 
     def encode(self, texts, to_tensor=True):
         all_embeddings = []
+        transformer_profiler = getattr(self, "_transformer_profiler", None)
         with torch.no_grad():
             for start_index in trange(0, len(texts), self.batch_size, desc="Batches", disable=False, ):
                 sentences_batch = texts[start_index: start_index + self.batch_size]
@@ -66,6 +67,9 @@ class SentenceEncoder:
                                                    max_length=self.max_length).to(self.device)
                 embeddings, _ = self.model.encode(text_tokens, pooling=True)
                 embeddings = embeddings.cpu()
+                if transformer_profiler is not None:
+                    # The D2H copy above completes this micro-batch's CUDA events.
+                    transformer_profiler.flush_completed()
                 all_embeddings.append(embeddings)
         all_embeddings = torch.cat(all_embeddings, dim=0)
         if not to_tensor:

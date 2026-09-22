@@ -63,6 +63,13 @@ def parse_args():
         help="Timed repetitions for both global encoding and graph inference",
     )
     parser.add_argument(
+        "--skip-transformer-profile",
+        action="store_true",
+        help=(
+            "Skip the additional aggregate Transformer/QKV/Attention/FFN replay"
+        ),
+    )
+    parser.add_argument(
         "--sampling-hops",
         type=int,
         help=(
@@ -254,10 +261,12 @@ def warmup_encoder(encoder, texts):
     return len(texts)
 
 
-def time_global_offline_encode(jobs, device):
+def time_global_offline_encode(jobs, device, transformer_profiler=None):
     """Replay every texts.pkl while excluding its disk-read time."""
     baseline = reset_peak_memory(device)
     elapsed = 0.0
+    if transformer_profiler is not None:
+        transformer_profiler.reset()
     with torch.inference_mode():
         for _, dataset, text_path in jobs:
             texts = load_cached_texts(text_path)
@@ -270,6 +279,16 @@ def time_global_offline_encode(jobs, device):
             gc.collect()
     result = {"encode_seconds": elapsed}
     result.update(peak_memory_report(device, baseline))
+    if transformer_profiler is not None:
+        transformer_profile = transformer_profiler.summary()
+        transformer_profile["profiled_encode_wall_seconds"] = elapsed
+        transformer_profile["gpu_peak_allocated_bytes"] = result[
+            "gpu_peak_allocated_bytes"
+        ]
+        transformer_profile["gpu_peak_increment_bytes"] = result[
+            "gpu_peak_increment_bytes"
+        ]
+        result["transformer_profile"] = transformer_profile
     return result
 
 
@@ -571,6 +590,7 @@ def make_report(
     warmed_graph_batches,
     hop_settings,
     encode_runs,
+    transformer_profile,
     graph_runs,
     metric_report,
     model,
@@ -590,6 +610,7 @@ def make_report(
         warmed_graph_batches: GNN 预热 batch 数。
         hop_settings: 图采样跳数和节点上限。
         encode_runs: 各轮 Encode 计时结果。
+        transformer_profile: 独立复放一次全量文本得到的 Transformer 聚合计时。
         graph_runs: 各轮 GNN 计时和工作量结果。
         metric_report: 独立非计时 pass 的指标结果。
         model: 用于读取 dtype 和 GNN 类型的下游模型。
@@ -604,6 +625,13 @@ def make_report(
     transfer_stats = summarize(run["device_transfer_seconds"] for run in graph_runs)
 
     encode_seconds = encode_stats["median"]
+    if transformer_profile is not None:
+        transformer_profile = dict(transformer_profile)
+        transformer_profile["profiled_vs_unprofiled_encode_ratio"] = (
+            transformer_profile["profiled_encode_wall_seconds"] / encode_seconds
+            if encode_seconds
+            else None
+        )
     gnn_seconds = gnn_stats["median"]
     other_seconds = other_stats["median"]
     profiled_total_seconds = encode_seconds + gnn_seconds + other_seconds
@@ -719,6 +747,25 @@ def make_report(
     total_text_micro_batches = sum(
         item["text_encoder_micro_batches"] for item in text_manifest
     )
+    if transformer_profile is not None:
+        actual_model_calls = transformer_profile["calls"]["model_forward"]
+        transformer_profile["expected_workload_model_calls"] = total_text_micro_batches
+        transformer_profile["workload_call_count_matches"] = (
+            actual_model_calls == total_text_micro_batches
+        )
+        if not transformer_profile["coverage_complete"]:
+            warnings.append(
+                "Transformer component hook counts do not match the discovered layer structure."
+            )
+        if actual_model_calls != total_text_micro_batches:
+            warnings.append(
+                "Transformer model-forward calls do not match the text micro-batch manifest."
+            )
+        if transformer_profile["partition_residual_seconds"] < 0:
+            warnings.append(
+                "Aggregated Attention plus FFN time exceeds Transformer forward time; "
+                "component hook overhead is too large for an additive interpretation."
+            )
     effective_node_limits = [
         setting["max_nodes_per_hop"]
         for setting in hop_settings
@@ -732,7 +779,7 @@ def make_report(
     )
     first_parameter = next(model.parameters())
     report = {
-        "report_version": 3,
+        "report_version": 4,
         "mode": "offline_heat_style",
         "strict_heat_reproduction": False,
         "heat_style_comparable": (
@@ -775,6 +822,7 @@ def make_report(
         "warmup_batches_executed": warmed_graph_batches,
         "encode_warmup_batches_requested": args.encode_warmup_batches,
         "encode_warmup_texts": warmed_texts,
+        "transformer_profile_enabled": transformer_profile is not None,
         "checkpoint": args.checkpoint,
         "checkpoint_loaded": checkpoint_loaded,
         "weights": (
@@ -824,6 +872,7 @@ def make_report(
             "device_transfer_seconds": transfer_stats,
             "paired_profiled_total_seconds": summarize(paired_profiled_total),
         },
+        "transformer_profile": transformer_profile,
         "runs": run_reports,
         "encode_scope": (
             "all text entries in each base dataset texts.pkl: tokenizer + "
@@ -853,7 +902,13 @@ def make_report(
         "embedding_replay_note": (
             "Timed embeddings are discarded. GNN inference consumes the existing "
             "offline cache built with the configured encoder, so profiled_total "
-            "does not include writing or attaching the newly encoded features."
+            "does not include writing or attaching the newly encoded features. "
+            + (
+                "Transformer component timing uses one additional diagnostic replay "
+                "which is excluded from encode_seconds and profiled_total."
+                if transformer_profile is not None
+                else "The optional Transformer component diagnostic replay was skipped."
+            )
         ),
         **metric_report,
         "metric_scope": (
@@ -886,6 +941,11 @@ def main():
     if params.llm_b_size <= 0:
         raise ValueError("llm_b_size must be positive for offline SentenceEncoder")
     device = utils.resolve_device(args.device)
+    if not args.skip_transformer_profile and device.type != "cuda":
+        raise ValueError(
+            "Transformer component profiling requires CUDA; pass "
+            "--skip-transformer-profile for the original CPU-compatible report."
+        )
 
     # 加载encode模型(Transformer部分)，时间为encoder_load_seconds
     encoder_load_started = time.perf_counter()
@@ -915,6 +975,26 @@ def main():
     encode_runs = [
         time_global_offline_encode(jobs, device) for _ in range(args.repeats)
     ]
+    transformer_profile = None
+    if not args.skip_transformer_profile:
+        from models.transformer_profiler import AggregateTransformerProfiler
+
+        profiler = AggregateTransformerProfiler(
+            encoder.model.model,
+            device=device,
+        ).start()
+        encoder._transformer_profiler = profiler
+        try:
+            profile_run = time_global_offline_encode(
+                jobs,
+                device,
+                transformer_profiler=profiler,
+            )
+            transformer_profile = profile_run["transformer_profile"]
+        finally:
+            encoder._transformer_profiler = None
+            profiler.close()
+        del profiler
     encoder.flush_model()
     gc.collect()
 
@@ -999,6 +1079,7 @@ def main():
         warmed_graph_batches,
         hop_settings,
         encode_runs,
+        transformer_profile,
         graph_runs,
         metric_report,
         model,

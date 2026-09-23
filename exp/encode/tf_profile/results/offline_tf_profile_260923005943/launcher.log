@@ -1,0 +1,13 @@
+[2026-09-23T01:19:31+08:00] PROFILE_START task=cora_node checkpoint=/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-17 17:25:07.738700/full_cdm/e5t7x7gs/checkpoints/epoch=74-step=150.ckpt
+[2026-09-23T01:20:22+08:00] PROFILE_END task=cora_node status=success
+[2026-09-23T01:20:22+08:00] PROFILE_START task=cora_link checkpoint=/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-21 18:06:44.432551/full_cdm/8x52rwr9/checkpoints/epoch=48-step=3479.ckpt
+[2026-09-23T01:21:05+08:00] PROFILE_END task=cora_link status=success
+[2026-09-23T01:21:05+08:00] PROFILE_START task=pubmed_node checkpoint=/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-17 16:01:00.408337/full_cdm/tn7immv7/checkpoints/epoch=60-step=61.ckpt
+[2026-09-23T01:27:32+08:00] PROFILE_END task=pubmed_node status=success
+[2026-09-23T01:27:32+08:00] PROFILE_START task=pubmed_link checkpoint=/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-21 19:05:58.361032/full_cdm/b9rejg4r/checkpoints/epoch=10-step=6479.ckpt
+[2026-09-23T01:33:54+08:00] PROFILE_END task=pubmed_link status=success
+[2026-09-23T01:33:54+08:00] PROFILE_START task=arxiv checkpoint=/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-21 20:44:10.956571/full_cdm/hk1d9kki/checkpoints/epoch=6-step=4977.ckpt
+[2026-09-23T02:13:10+08:00] PROFILE_END task=arxiv status=success
+[2026-09-23T02:13:10+08:00] PROFILE_START task=WN18RR checkpoint=/data1/xxr_data/GNN/GNN-Task_Relation/saved_exp/2026-09-22 12:45:33.439358/full_cdm/pyb5uw7f/checkpoints/epoch=32-step=22407.ckpt
+[2026-09-23T02:14:44+08:00] PROFILE_END task=WN18RR status=success
+[2026-09-23T02:14:44+08:00] ALL_TASKS_FINISHED result_dir=/data1/xxr_data/GNN/GNN-Task_Relation/exp/encode/tf_profile/results/offline_tf_profile_260923005943

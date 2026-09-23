@@ -629,6 +629,8 @@ class TransformerModel(nn.Module):
 
 
 class PyGRGCNEdge(MultiLayerMessagePassing):
+    """RGCN encoder with mixed precision selected by the current graph's in-degree."""
+
     def __init__(
         self,
         num_layers: int,
@@ -638,12 +640,32 @@ class PyGRGCNEdge(MultiLayerMessagePassing):
         drop_ratio=0,
         JK="last",
         batch_norm=True,
+        dq_enabled=False,
+        dq_degree_threshold=10,
     ):
         super().__init__(
             num_layers, inp_dim, out_dim, drop_ratio, JK, batch_norm
         )
+        if dq_degree_threshold < 1:
+            raise ValueError("dq_degree_threshold must be at least 1")
+
         self.num_rels = num_rels
+        self.dq_enabled = dq_enabled
+        self.dq_degree_threshold = dq_degree_threshold
         self.build_layers()
+
+    def _high_degree_mask(self, edge_index, num_nodes):
+        in_degree = torch.bincount(edge_index[1], minlength=num_nodes)
+        return in_degree >= self.dq_degree_threshold
+
+    def build_forward_context(self, g):
+        if not self.dq_enabled or self.training:
+            return {}
+        return {
+            "high_degree_mask": self._high_degree_mask(
+                g.edge_index, g.x.size(0)
+            )
+        }
 
     def build_input_layer(self):
         return RGCNEdgeConv(self.inp_dim, self.out_dim, self.num_rels)
@@ -664,6 +686,10 @@ class PyGRGCNEdge(MultiLayerMessagePassing):
 
     def layer_forward(self, layer, message):
         return self.conv[layer](
-            message["h"], message["he"], message["g"], message["e"]
+            message["h"],
+            message["he"],
+            message["g"],
+            message["e"],
+            high_degree_mask=message.get("high_degree_mask"),
         )
 

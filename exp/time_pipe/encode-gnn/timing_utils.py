@@ -207,6 +207,8 @@ def _build_gnn(params):
         out_dim,
         drop_ratio=params.dropout,
         JK=params.JK,
+        dq_enabled=params.gnn_dq_enabled,
+        dq_degree_threshold=params.gnn_dq_degree_threshold,
     )
     return gnn, out_dim
 

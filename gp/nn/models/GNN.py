@@ -86,13 +86,18 @@ class MultiLayerMessagePassing(nn.Module, metaclass=ABCMeta):
     def build_message_from_output(self, g, output):
         pass
 
+    def build_forward_context(self, g):
+        return {}
+
     def forward(self, g, drop_mask=None):
         h_list = []
 
+        forward_context = self.build_forward_context(g)
         message = self.build_message_from_input(g)
 
         for layer in range(self.num_layers):
             # print(layer, h)
+            message.update(forward_context)
             h = self.layer_forward(layer, message)
             if self.batch_norm:
                 h = self.batch_norm[layer](h)

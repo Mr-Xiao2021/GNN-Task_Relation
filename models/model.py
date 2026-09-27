@@ -36,7 +36,8 @@ except ImportError:
     get_peft_model = None
     prepare_model_for_kbit_training = None
 
-from gp.nn.layer.pyg import RGCNEdgeConv
+from gp.nn.degree_quant import high_degree_mask, mixed_fake_quantize
+from gp.nn.layer.pyg import DegreeQuantRGCNEdgeConv, RGCNEdgeConv
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.models.util_model import MLP
 from gp.utils.utils import load_pretrained_state
@@ -667,3 +668,103 @@ class PyGRGCNEdge(MultiLayerMessagePassing):
             message["h"], message["he"], message["g"], message["e"]
         )
 
+
+class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
+    """Inference-only FP32/INT mixed-precision variant of ``PyGRGCNEdge``."""
+
+    def __init__(
+        self,
+        num_layers: int,
+        num_rels: int,
+        inp_dim: int,
+        out_dim: int,
+        drop_ratio=0,
+        JK="last",
+        batch_norm=True,
+        high_precision_percent=None,
+        quant_bits=8,
+    ):
+        self.quant_bits = quant_bits
+        self.high_precision_percent = None
+        super().__init__(
+            num_layers,
+            num_rels,
+            inp_dim,
+            out_dim,
+            drop_ratio=drop_ratio,
+            JK=JK,
+            batch_norm=batch_norm,
+        )
+        self.set_high_precision_percent(high_precision_percent)
+
+    def build_input_layer(self):
+        return DegreeQuantRGCNEdgeConv(
+            self.inp_dim,
+            self.out_dim,
+            self.num_rels,
+            num_bits=self.quant_bits,
+        )
+
+    def build_hidden_layer(self):
+        return DegreeQuantRGCNEdgeConv(
+            self.inp_dim,
+            self.out_dim,
+            self.num_rels,
+            num_bits=self.quant_bits,
+        )
+
+    def set_high_precision_percent(self, high_precision_percent):
+        if high_precision_percent is not None and not 0 <= high_precision_percent <= 100:
+            raise ValueError("high_precision_percent must be None or in [0, 100]")
+        self.high_precision_percent = high_precision_percent
+
+    def forward(self, g, drop_mask=None):
+        if self.training and self.high_precision_percent is not None:
+            raise RuntimeError("Degree-aware quantization is inference-only; call model.eval()")
+
+        if self.high_precision_percent is None:
+            high_precision = None
+            low_precision = None
+        else:
+            high_precision = high_degree_mask(
+                g.edge_index,
+                g.x.size(0),
+                self.high_precision_percent,
+                getattr(g, "batch", None),
+            )
+            low_precision = ~high_precision
+
+        h_list = []
+        message = self.build_message_from_input(g)
+        for layer in range(self.num_layers):
+            h = self.conv[layer](
+                message["h"],
+                message["he"],
+                message["g"],
+                message["e"],
+                high_precision,
+            )
+            if self.batch_norm:
+                h = self.batch_norm[layer](h)
+            if layer != self.num_layers - 1:
+                h = F.relu(h)
+            if self.drop_ratio is not None:
+                dropped_h = F.dropout(h, p=self.drop_ratio, training=self.training)
+                if drop_mask is not None:
+                    h = (
+                        drop_mask.view(-1, 1) * dropped_h
+                        + torch.logical_not(drop_mask).view(-1, 1) * h
+                    )
+                else:
+                    h = dropped_h
+            h = mixed_fake_quantize(h, low_precision, self.quant_bits)
+            message = self.build_message_from_output(g, h)
+            h_list.append(h)
+
+        if self.JK == "last":
+            return h_list[-1]
+        if self.JK == "sum":
+            return torch.stack(h_list).sum(dim=0)
+        if self.JK == "mean":
+            return torch.stack(h_list).mean(dim=0)
+        return h_list

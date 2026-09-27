@@ -7,6 +7,12 @@ from torch_geometric.nn.inits import glorot, zeros
 from torch_geometric.typing import Adj, OptTensor
 from torch_geometric.utils import softmax, add_self_loops
 
+from gp.nn.degree_quant import (
+    mixed_fake_quantize,
+    mixed_precision_linear,
+    symmetric_fake_quantize,
+)
+
 
 def masked_edge_index(edge_index, edge_mask):
     if isinstance(edge_index, torch.Tensor):
@@ -68,6 +74,108 @@ class RGCNEdgeConv(MessagePassing):
 
         # Step 4: Normalize node features.
         return (x_j + xe).relu()
+
+
+class DegreeQuantRGCNEdgeConv(RGCNEdgeConv):
+    """RGCN edge layer with deterministic degree-aware mixed fake quantization.
+
+    The mask marks FP32 nodes. Other nodes use a quantize-dequantize path for
+    inputs, weights, messages, aggregation outputs, and layer updates.
+    """
+
+    def __init__(self, *args, num_bits: int = 8, **kwargs):
+        self.num_bits = num_bits
+        self._quantized_weight = None
+        self._quantized_root = None
+        self._quantized_parameter_versions = None
+        super().__init__(*args, **kwargs)
+
+    def reset_parameters(self):
+        super().reset_parameters()
+        self._quantized_weight = None
+        self._quantized_root = None
+        self._quantized_parameter_versions = None
+
+    def _quantized_parameters(self):
+        versions = (self.weight._version, self.root._version)
+        cache_is_current = (
+            self._quantized_parameter_versions == versions
+            and self._quantized_weight is not None
+            and self._quantized_weight.device == self.weight.device
+            and self._quantized_weight.dtype == self.weight.dtype
+        )
+        if not cache_is_current:
+            self._quantized_weight = torch.stack(
+                [
+                    symmetric_fake_quantize(
+                        relation_weight,
+                        num_bits=self.num_bits,
+                        channel_axis=1,
+                    )
+                    for relation_weight in self.weight
+                ]
+            )
+            self._quantized_root = symmetric_fake_quantize(
+                self.root, num_bits=self.num_bits, channel_axis=1
+            )
+            self._quantized_parameter_versions = versions
+        return self._quantized_weight, self._quantized_root
+
+    def forward(
+        self,
+        x: OptTensor,
+        xe: OptTensor,
+        edge_index: Adj,
+        edge_type: OptTensor = None,
+        high_precision_mask: OptTensor = None,
+    ):
+        if high_precision_mask is None:
+            return super().forward(x, xe, edge_index, edge_type)
+        if high_precision_mask.dtype != torch.bool or len(high_precision_mask) != len(x):
+            raise ValueError("high_precision_mask must be boolean with one entry per node")
+
+        low_precision_mask = ~high_precision_mask
+        mixed_x = mixed_fake_quantize(x, low_precision_mask, self.num_bits)
+        quantized_weight, quantized_root = self._quantized_parameters()
+        out = torch.zeros(x.size(0), self.out_channels, device=x.device, dtype=x.dtype)
+
+        for relation in range(self.num_relations):
+            relation_mask = edge_type == relation
+            relation_edges = masked_edge_index(edge_index, relation_mask)
+            edge_low_precision = low_precision_mask[relation_edges[0]]
+            relation_edge_attr = mixed_fake_quantize(
+                xe[relation_mask], edge_low_precision, self.num_bits
+            )
+            aggregated = self.propagate(
+                relation_edges,
+                x=mixed_x,
+                xe=relation_edge_attr,
+                low_precision_mask=edge_low_precision,
+            )
+            aggregated = mixed_fake_quantize(
+                aggregated, low_precision_mask, self.num_bits
+            )
+            out += mixed_precision_linear(
+                aggregated,
+                self.weight[relation],
+                low_precision_mask,
+                self.num_bits,
+                quantized_weight=quantized_weight[relation],
+            )
+
+        out += mixed_precision_linear(
+            mixed_x,
+            self.root,
+            low_precision_mask,
+            self.num_bits,
+            quantized_weight=quantized_root,
+        )
+        out += self.bias
+        return mixed_fake_quantize(out, low_precision_mask, self.num_bits)
+
+    def message(self, x_j, xe, low_precision_mask=None):
+        message = (x_j + xe).relu()
+        return mixed_fake_quantize(message, low_precision_mask, self.num_bits)
 
 
 class RGATEdgeConv(RGCNEdgeConv):

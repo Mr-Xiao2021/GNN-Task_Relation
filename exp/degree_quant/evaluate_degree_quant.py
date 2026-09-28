@@ -70,6 +70,21 @@ def parse_args():
     parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--max-batches", type=int)
+    parser.add_argument(
+        "--quantization-backend",
+        choices=("int8", "int8_full", "qdq"),
+        default="int8",
+        help=(
+            "Use fused real INT8 GEMM with float aggregation, add INT32 message "
+            "aggregation with int8_full, or use the legacy float QDQ path."
+        ),
+    )
+    parser.add_argument(
+        "--warmup-batches",
+        type=int,
+        default=1,
+        help="Exclude this many leading batches from steady-state model throughput.",
+    )
     parser.add_argument("--output-dir", type=Path)
     return parser.parse_args()
 
@@ -168,17 +183,31 @@ def evaluate(
     test_data,
     device,
     high_precision_percent,
+    quantization_backend,
     seed,
     max_batches,
+    warmup_batches,
 ):
     set_random_seed(seed)
     model.model.set_high_precision_percent(high_precision_percent)
+    model.model.set_quantization_backend(quantization_backend)
+    model.model.reset_runtime_stats()
     model.eval()
     metric = build_metric(test_data)
     loader = data_module.test_dataloader()[0]
 
     batches = 0
     examples = 0
+    nodes = 0
+    edges = 0
+    model_seconds = 0.0
+    steady_batches = 0
+    steady_examples = 0
+    steady_nodes = 0
+    steady_edges = 0
+    steady_model_seconds = 0.0
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     synchronize(device)
     started = time.perf_counter()
     with torch.inference_mode():
@@ -186,14 +215,104 @@ def evaluate(
             if max_batches is not None and batch_index >= max_batches:
                 break
             batch = batch.to(device)
-            output = model(batch)
+            if device.type == "cuda":
+                event_start = torch.cuda.Event(enable_timing=True)
+                event_end = torch.cuda.Event(enable_timing=True)
+                event_start.record()
+                output = model(batch)
+                event_end.record()
+                event_end.synchronize()
+                batch_model_seconds = event_start.elapsed_time(event_end) / 1000.0
+            else:
+                model_started = time.perf_counter()
+                output = model(batch)
+                batch_model_seconds = time.perf_counter() - model_started
             update_metric(metric, test_data.metric, output, batch)
             batches += 1
-            examples += int(batch.num_graphs)
+            batch_examples = int(batch.num_graphs)
+            batch_nodes = int(batch.num_nodes)
+            batch_edges = int(batch.num_edges)
+            examples += batch_examples
+            nodes += batch_nodes
+            edges += batch_edges
+            model_seconds += batch_model_seconds
+            if batch_index >= warmup_batches:
+                steady_batches += 1
+                steady_examples += batch_examples
+                steady_nodes += batch_nodes
+                steady_edges += batch_edges
+                steady_model_seconds += batch_model_seconds
     synchronize(device)
     elapsed = time.perf_counter() - started
     value = float(metric.compute().detach().cpu())
-    return value, batches, examples, elapsed
+    if steady_batches == 0:
+        steady_batches = batches
+        steady_examples = examples
+        steady_nodes = nodes
+        steady_edges = edges
+        steady_model_seconds = model_seconds
+
+    runtime_stats = model.model.get_runtime_stats()
+    fp32_macs = runtime_stats["fp32_macs"]
+    int8_macs = runtime_stats["int8_macs"]
+    fp32_reference_macs = runtime_stats["fp32_reference_macs"]
+    fp32_message_ops = runtime_stats["fp32_message_ops"]
+    int8_message_ops = runtime_stats["int8_message_ops"]
+    mixq_bitops_proxy = (
+        (fp32_macs + fp32_message_ops) * 32
+        + (int8_macs + int8_message_ops) * 8
+    )
+    fp32_mixq_bitops_proxy = (
+        fp32_reference_macs + fp32_message_ops + int8_message_ops
+    ) * 32
+    matmul_bitops = fp32_macs * 32 * 32 + int8_macs * 8 * 8
+    fp32_matmul_bitops = fp32_reference_macs * 32 * 32
+
+    measurements = {
+        "batches": batches,
+        "examples": examples,
+        "nodes": nodes,
+        "edges": edges,
+        "elapsed_seconds": elapsed,
+        "model_seconds": model_seconds,
+        "steady_model_seconds": steady_model_seconds,
+        "examples_per_second": examples / elapsed,
+        "model_examples_per_second": examples / model_seconds,
+        "steady_model_examples_per_second": steady_examples / steady_model_seconds,
+        "steady_model_nodes_per_second": steady_nodes / steady_model_seconds,
+        "steady_model_edges_per_second": steady_edges / steady_model_seconds,
+        "peak_cuda_memory_mb": (
+            torch.cuda.max_memory_allocated(device) / (1024 * 1024)
+            if device.type == "cuda"
+            else None
+        ),
+        "real_node_occurrences": runtime_stats["real_nodes"],
+        "high_precision_real_node_occurrences": runtime_stats[
+            "high_precision_real_nodes"
+        ],
+        "prompt_node_occurrences": runtime_stats["prompt_nodes"],
+        "realized_high_precision_real_percent": (
+            100.0
+            * runtime_stats["high_precision_real_nodes"]
+            / runtime_stats["real_nodes"]
+        ),
+        "fp32_macs": fp32_macs,
+        "int8_macs": int8_macs,
+        "fp32_reference_macs": fp32_reference_macs,
+        "executed_macs_reduction_percent": 100.0
+        * (1.0 - (fp32_macs + int8_macs) / fp32_reference_macs),
+        "fp32_message_ops": fp32_message_ops,
+        "int8_message_ops": int8_message_ops,
+        "mixq_bitops_proxy": mixq_bitops_proxy,
+        "fp32_mixq_bitops_proxy": fp32_mixq_bitops_proxy,
+        "mixq_bitops_reduction_percent": 100.0
+        * (1.0 - mixq_bitops_proxy / fp32_mixq_bitops_proxy),
+        "matmul_bitops": matmul_bitops,
+        "fp32_matmul_bitops": fp32_matmul_bitops,
+        "matmul_bitops_reduction_percent": 100.0
+        * (1.0 - matmul_bitops / fp32_matmul_bitops),
+    }
+    return value, measurements
 
 
 def write_results(output_dir: Path, metadata, rows):
@@ -237,16 +356,41 @@ def main():
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "max_batches": args.max_batches,
+        "warmup_batches": args.warmup_batches,
         "deterministic_algorithms": True,
         "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
         "tasks": args.tasks,
         "high_precision_percents": args.high_precision_percents,
         "quantization": {
-            "kind": "inference-only symmetric QDQ simulation",
+            "kind": (
+                "hybrid real INT8 kernel"
+                if args.quantization_backend in {"int8", "int8_full"}
+                else "symmetric float QDQ simulation"
+            ),
+            "backend": args.quantization_backend,
             "bits": 8,
-            "node_partition": "per-graph top in-degree with stable node-index tie break",
+            "node_partition": (
+                "source-graph global degree rank; prompt nodes remain FP32; "
+                "link/KG ranks use the training graph to avoid held-out-edge leakage"
+            ),
             "activation_granularity": "per-tensor over low-precision rows",
             "weight_granularity": "per-output-channel",
+            "integer_kernels": (
+                (
+                    "fused torch._int_mm INT8xINT8->INT32; "
+                    + (
+                        "INT32 scatter_add"
+                        if args.quantization_backend == "int8_full"
+                        else "message aggregation remains float after INT8 QDQ"
+                    )
+                )
+                if args.quantization_backend in {"int8", "int8_full"}
+                else None
+            ),
+            "bitops": {
+                "mixq_proxy": "operation count times selected precision",
+                "matmul": "MAC count times activation bits times weight bits",
+            },
         },
     }
     rows = []
@@ -261,14 +405,16 @@ def main():
         )
         model.to(device)
 
-        baseline, batches, examples, elapsed = evaluate(
+        baseline, baseline_measurements = evaluate(
             model,
             data_module,
             test_data,
             device,
             None,
+            args.quantization_backend,
             args.seed,
             args.max_batches,
+            args.warmup_batches,
         )
         baseline_row = {
             "task": task_name,
@@ -280,40 +426,51 @@ def main():
             "metric": baseline,
             "delta_from_fp32": 0.0,
             "relative_delta_percent": 0.0,
-            "batches": batches,
-            "examples": examples,
-            "elapsed_seconds": elapsed,
+            "speedup_vs_fp32_model": 1.0,
             "checkpoint": str(checkpoint_path.relative_to(PROJECT_ROOT)),
+            **baseline_measurements,
         }
         rows.append(baseline_row)
         write_results(output_dir, metadata, rows)
         print(json.dumps({"event": "result", **baseline_row}), flush=True)
 
         for percent in args.high_precision_percents:
-            value, batches, examples, elapsed = evaluate(
+            value, measurements = evaluate(
                 model,
                 data_module,
                 test_data,
                 device,
                 percent,
+                args.quantization_backend,
                 args.seed,
                 args.max_batches,
+                args.warmup_batches,
             )
             delta = value - baseline
             row = {
                 "task": task_name,
                 "split": test_data.state_name,
                 "metric_name": test_data.metric,
-                "mode": "degree_mixed_int8",
+                "mode": (
+                    "degree_global_int8_kernel"
+                    if args.quantization_backend == "int8"
+                    else (
+                        "degree_global_int8_full_kernel"
+                        if args.quantization_backend == "int8_full"
+                        else "degree_global_int8_qdq"
+                    )
+                ),
                 "high_precision_percent": float(percent),
                 "low_precision_percent": 100.0 - float(percent),
                 "metric": value,
                 "delta_from_fp32": delta,
                 "relative_delta_percent": 100.0 * delta / abs(baseline) if baseline else None,
-                "batches": batches,
-                "examples": examples,
-                "elapsed_seconds": elapsed,
+                "speedup_vs_fp32_model": (
+                    baseline_measurements["steady_model_seconds"]
+                    / measurements["steady_model_seconds"]
+                ),
                 "checkpoint": str(checkpoint_path.relative_to(PROJECT_ROOT)),
+                **measurements,
             }
             rows.append(row)
             write_results(output_dir, metadata, rows)

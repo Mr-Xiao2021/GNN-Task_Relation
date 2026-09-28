@@ -36,7 +36,7 @@ except ImportError:
     get_peft_model = None
     prepare_model_for_kbit_training = None
 
-from gp.nn.degree_quant import high_degree_mask, mixed_fake_quantize
+from gp.nn.degree_quant import global_degree_mask, mixed_fake_quantize
 from gp.nn.layer.pyg import DegreeQuantRGCNEdgeConv, RGCNEdgeConv
 from gp.nn.models.GNN import MultiLayerMessagePassing
 from gp.nn.models.util_model import MLP
@@ -670,7 +670,7 @@ class PyGRGCNEdge(MultiLayerMessagePassing):
 
 
 class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
-    """Inference-only FP32/INT mixed-precision variant of ``PyGRGCNEdge``."""
+    """Inference-only degree-aware FP32/INT8 variant of ``PyGRGCNEdge``."""
 
     def __init__(
         self,
@@ -683,9 +683,12 @@ class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
         batch_norm=True,
         high_precision_percent=None,
         quant_bits=8,
+        quantization_backend="qdq",
     ):
         self.quant_bits = quant_bits
+        self.quantization_backend = quantization_backend
         self.high_precision_percent = None
+        self._runtime_stats = {}
         super().__init__(
             num_layers,
             num_rels,
@@ -696,6 +699,7 @@ class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
             batch_norm=batch_norm,
         )
         self.set_high_precision_percent(high_precision_percent)
+        self.set_quantization_backend(quantization_backend)
 
     def build_input_layer(self):
         return DegreeQuantRGCNEdgeConv(
@@ -703,6 +707,7 @@ class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
             self.out_dim,
             self.num_rels,
             num_bits=self.quant_bits,
+            quantization_backend=self.quantization_backend,
         )
 
     def build_hidden_layer(self):
@@ -711,6 +716,7 @@ class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
             self.out_dim,
             self.num_rels,
             num_bits=self.quant_bits,
+            quantization_backend=self.quantization_backend,
         )
 
     def set_high_precision_percent(self, high_precision_percent):
@@ -718,21 +724,114 @@ class PyGDegreeQuantRGCNEdge(PyGRGCNEdge):
             raise ValueError("high_precision_percent must be None or in [0, 100]")
         self.high_precision_percent = high_precision_percent
 
+    def set_quantization_backend(self, backend):
+        if backend not in {"qdq", "int8", "int8_full"}:
+            raise ValueError(
+                "quantization_backend must be 'qdq', 'int8', or 'int8_full'"
+            )
+        if backend in {"int8", "int8_full"} and self.quant_bits != 8:
+            raise ValueError("The real integer kernel currently supports INT8 only")
+        self.quantization_backend = backend
+        for layer in self.conv:
+            layer.set_quantization_backend(backend)
+
+    def reset_runtime_stats(self):
+        self._runtime_stats = {}
+
+    def _add_runtime_stat(self, name, value):
+        value = value.detach() if isinstance(value, torch.Tensor) else value
+        if name in self._runtime_stats:
+            self._runtime_stats[name] = self._runtime_stats[name] + value
+        else:
+            self._runtime_stats[name] = value
+
+    def get_runtime_stats(self):
+        stats = {}
+        for name, value in self._runtime_stats.items():
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().item()
+            stats[name] = int(value)
+        return stats
+
+    def _record_runtime_stats(self, graph, high_precision_mask):
+        low_precision_mask = ~high_precision_mask
+        real_node_mask = graph.real_node_mask
+        low_edges = low_precision_mask[graph.edge_index[0]].sum(dtype=torch.int64)
+        total_edges = torch.as_tensor(
+            graph.edge_index.shape[1], device=graph.x.device, dtype=torch.int64
+        )
+        low_nodes = low_precision_mask.sum(dtype=torch.int64)
+        total_nodes = torch.as_tensor(
+            graph.x.shape[0], device=graph.x.device, dtype=torch.int64
+        )
+
+        self._add_runtime_stat("nodes", total_nodes)
+        self._add_runtime_stat("edges", total_edges)
+        self._add_runtime_stat("real_nodes", real_node_mask.sum(dtype=torch.int64))
+        self._add_runtime_stat(
+            "high_precision_real_nodes",
+            (high_precision_mask & real_node_mask).sum(dtype=torch.int64),
+        )
+        self._add_runtime_stat("prompt_nodes", (~real_node_mask).sum(dtype=torch.int64))
+
+        macs_per_row = self.inp_dim * self.out_dim
+        dense_reference_rows = total_nodes * (self.num_rels + 1) * self.num_layers
+        self._add_runtime_stat(
+            "fp32_reference_macs", dense_reference_rows * macs_per_row
+        )
+
+        int8_rows = self.num_layers * low_nodes * (self.num_rels + 1)
+        fp32_rows = (
+            self.num_layers
+            * (total_nodes - low_nodes)
+            * (self.num_rels + 1)
+        )
+        self._add_runtime_stat("int8_macs", int8_rows * macs_per_row)
+        self._add_runtime_stat("fp32_macs", fp32_rows * macs_per_row)
+
+        # Per edge: feature addition, ReLU, and accumulation. Per node: mean
+        # normalization. These counts intentionally exclude quantize/dequantize
+        # overhead and are reported as a MixQ-style precision-cost proxy.
+        int8_message_ops = self.num_layers * (
+            low_edges * self.out_dim * 3 + low_nodes * self.out_dim
+        )
+        fp32_message_ops = self.num_layers * (
+            (total_edges - low_edges) * self.out_dim * 3
+            + (total_nodes - low_nodes) * self.out_dim
+        )
+        self._add_runtime_stat("int8_message_ops", int8_message_ops)
+        self._add_runtime_stat("fp32_message_ops", fp32_message_ops)
+
     def forward(self, g, drop_mask=None):
         if self.training and self.high_precision_percent is not None:
             raise RuntimeError("Degree-aware quantization is inference-only; call model.eval()")
 
         if self.high_precision_percent is None:
-            high_precision = None
-            low_precision = None
+            high_precision = torch.ones(
+                g.x.size(0), dtype=torch.bool, device=g.x.device
+            )
+            self._record_runtime_stats(g, high_precision)
+            return super().forward(g, drop_mask=drop_mask)
         else:
-            high_precision = high_degree_mask(
-                g.edge_index,
-                g.x.size(0),
+            required_fields = (
+                "global_degree_rank",
+                "global_graph_num_nodes",
+                "real_node_mask",
+            )
+            missing = [field for field in required_fields if not hasattr(g, field)]
+            if missing:
+                raise ValueError(
+                    "Global degree metadata is required for quantized inference: "
+                    + ", ".join(missing)
+                )
+            high_precision = global_degree_mask(
+                g.global_degree_rank,
+                g.global_graph_num_nodes,
+                g.real_node_mask,
                 self.high_precision_percent,
-                getattr(g, "batch", None),
             )
             low_precision = ~high_precision
+            self._record_runtime_stats(g, high_precision)
 
         h_list = []
         message = self.build_message_from_input(g)

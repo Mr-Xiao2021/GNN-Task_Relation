@@ -1,5 +1,7 @@
 # Degree-Aware Quant GNN 实现报告
 
+> 历史版本说明：本文保留首版“prompted subgraph 内局部度数 + 浮点 QDQ”实现和结果，用于回溯对比。当前“源图全局真实节点度数 + 真实 INT8 kernel”实现与六任务结果见 [`GLOBAL_INT8_KERNEL_REPORT.md`](GLOBAL_INT8_KERNEL_REPORT.md)。
+
 ## 1. 目标与范围
 
 本次开发用于观察“按节点度数分配推理精度”对六类 GNN 任务最终指标的影响：

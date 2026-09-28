@@ -1,4 +1,9 @@
-# Degree-aware FP32/INT8 inference results
+# Historical local-subgraph QDQ inference results
+
+> This file preserves the first QDQ experiment. It uses degree ranks computed
+> inside each prompted subgraph and does not execute an integer kernel. The
+> current source-graph global-degree and real INT8 results are in
+> [`GLOBAL_INT8_KERNEL_REPORT.md`](GLOBAL_INT8_KERNEL_REPORT.md).
 
 Run date: 2026-09-27
 

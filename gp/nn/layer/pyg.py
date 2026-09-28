@@ -8,8 +8,11 @@ from torch_geometric.typing import Adj, OptTensor
 from torch_geometric.utils import softmax, add_self_loops
 
 from gp.nn.degree_quant import (
+    mixed_int8_linear,
+    mixed_int8_mean_aggregate,
     mixed_fake_quantize,
     mixed_precision_linear,
+    symmetric_quantize_int8,
     symmetric_fake_quantize,
 )
 
@@ -77,24 +80,43 @@ class RGCNEdgeConv(MessagePassing):
 
 
 class DegreeQuantRGCNEdgeConv(RGCNEdgeConv):
-    """RGCN edge layer with deterministic degree-aware mixed fake quantization.
+    """RGCN edge layer with degree-aware FP32/INT8 inference backends.
 
-    The mask marks FP32 nodes. Other nodes use a quantize-dequantize path for
-    inputs, weights, messages, aggregation outputs, and layer updates.
+    The mask marks FP32 nodes. Other nodes use either the legacy QDQ simulation
+    or a real INT8 GEMM path, with optional INT32 message aggregation.
     """
 
-    def __init__(self, *args, num_bits: int = 8, **kwargs):
+    def __init__(
+        self, *args, num_bits: int = 8, quantization_backend: str = "qdq", **kwargs
+    ):
         self.num_bits = num_bits
+        self.quantization_backend = None
         self._quantized_weight = None
         self._quantized_root = None
+        self._int8_fused_weight = None
+        self._int8_fused_weight_scale = None
+        self._fused_weight = None
         self._quantized_parameter_versions = None
         super().__init__(*args, **kwargs)
+        self.set_quantization_backend(quantization_backend)
 
     def reset_parameters(self):
         super().reset_parameters()
         self._quantized_weight = None
         self._quantized_root = None
+        self._int8_fused_weight = None
+        self._int8_fused_weight_scale = None
+        self._fused_weight = None
         self._quantized_parameter_versions = None
+
+    def set_quantization_backend(self, backend):
+        if backend not in {"qdq", "int8", "int8_full"}:
+            raise ValueError(
+                "quantization_backend must be 'qdq', 'int8', or 'int8_full'"
+            )
+        if backend in {"int8", "int8_full"} and self.num_bits != 8:
+            raise ValueError("The real integer kernel currently supports INT8 only")
+        self.quantization_backend = backend
 
     def _quantized_parameters(self):
         versions = (self.weight._version, self.root._version)
@@ -121,6 +143,31 @@ class DegreeQuantRGCNEdgeConv(RGCNEdgeConv):
             self._quantized_parameter_versions = versions
         return self._quantized_weight, self._quantized_root
 
+    def _int8_quantized_parameters(self):
+        versions = (self.weight._version, self.root._version)
+        cache_is_current = (
+            self._quantized_parameter_versions == versions
+            and self._int8_fused_weight is not None
+            and self._int8_fused_weight.device == self.weight.device
+        )
+        if not cache_is_current:
+            self._fused_weight = torch.cat(
+                [*[relation_weight for relation_weight in self.weight], self.root],
+                dim=0,
+            )
+            (
+                self._int8_fused_weight,
+                self._int8_fused_weight_scale,
+            ) = symmetric_quantize_int8(
+                self._fused_weight, channel_axis=1
+            )
+            self._quantized_parameter_versions = versions
+        return (
+            self._fused_weight,
+            self._int8_fused_weight,
+            self._int8_fused_weight_scale,
+        )
+
     def forward(
         self,
         x: OptTensor,
@@ -133,6 +180,11 @@ class DegreeQuantRGCNEdgeConv(RGCNEdgeConv):
             return super().forward(x, xe, edge_index, edge_type)
         if high_precision_mask.dtype != torch.bool or len(high_precision_mask) != len(x):
             raise ValueError("high_precision_mask must be boolean with one entry per node")
+
+        if self.quantization_backend in {"int8", "int8_full"}:
+            return self._int8_forward(
+                x, xe, edge_index, edge_type, high_precision_mask
+            )
 
         low_precision_mask = ~high_precision_mask
         mixed_x = mixed_fake_quantize(x, low_precision_mask, self.num_bits)
@@ -169,6 +221,61 @@ class DegreeQuantRGCNEdgeConv(RGCNEdgeConv):
             low_precision_mask,
             self.num_bits,
             quantized_weight=quantized_root,
+        )
+        out += self.bias
+        return mixed_fake_quantize(out, low_precision_mask, self.num_bits)
+
+    def _int8_forward(self, x, xe, edge_index, edge_type, high_precision_mask):
+        low_precision_mask = ~high_precision_mask
+        mixed_x = mixed_fake_quantize(x, low_precision_mask, self.num_bits)
+        fused_weight, quantized_weight, weight_scale = (
+            self._int8_quantized_parameters()
+        )
+        aggregated_inputs = []
+
+        for relation in range(self.num_relations):
+            relation_mask = edge_type == relation
+            relation_edges = masked_edge_index(edge_index, relation_mask)
+            if relation_edges.shape[1] == 0:
+                aggregated_inputs.append(
+                    torch.zeros(
+                        x.size(0), self.out_channels, device=x.device, dtype=x.dtype
+                    )
+                )
+                continue
+            source_low_precision = low_precision_mask[relation_edges[0]]
+            relation_edge_attr = mixed_fake_quantize(
+                xe[relation_mask], source_low_precision, self.num_bits
+            )
+            if self.quantization_backend == "int8_full":
+                messages = (
+                    mixed_x[relation_edges[0]] + relation_edge_attr
+                ).relu()
+                aggregated = mixed_int8_mean_aggregate(
+                    messages,
+                    relation_edges[1],
+                    source_low_precision,
+                    x.size(0),
+                )
+            else:
+                aggregated = self.propagate(
+                    relation_edges,
+                    x=mixed_x,
+                    xe=relation_edge_attr,
+                    low_precision_mask=source_low_precision,
+                )
+            aggregated = mixed_fake_quantize(
+                aggregated, low_precision_mask, self.num_bits
+            )
+            aggregated_inputs.append(aggregated)
+
+        fused_input = torch.cat([*aggregated_inputs, mixed_x], dim=1)
+        out = mixed_int8_linear(
+            fused_input,
+            fused_weight,
+            low_precision_mask,
+            quantized_weight=quantized_weight,
+            weight_scale=weight_scale,
         )
         out += self.bias
         return mixed_fake_quantize(out, low_precision_mask, self.num_bits)

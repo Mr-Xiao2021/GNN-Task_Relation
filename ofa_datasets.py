@@ -11,6 +11,24 @@ from gp.utils.graph import sample_fixed_hop_size_neighbor
 from utils import scipy_rwpe, set_mask
 
 
+class FeatureGraph(list):
+    """Feature-graph fields plus source-graph identity metadata."""
+
+    def __init__(
+        self,
+        values,
+        global_node_ids=None,
+        global_node_degrees=None,
+        global_degree_ranks=None,
+        global_num_nodes=None,
+    ):
+        super().__init__(values)
+        self.global_node_ids = global_node_ids
+        self.global_node_degrees = global_node_degrees
+        self.global_degree_ranks = global_degree_ranks
+        self.global_num_nodes = global_num_nodes
+
+
 class OFA_collater:
     """
     Merge a batch of OFA graphs. Numeric features are converted to tensors;
@@ -187,7 +205,43 @@ class GraphTextDataset(DatasetWithCollate, ABC):
         set_mask(new_subg, "feat_node_mask", list(range(len(feature_graph[0]))))
         new_subg.sample_num_nodes = new_subg.num_nodes
         new_subg.num_classes = num_class
+        self._attach_global_degree_metadata(new_subg, feature_graph)
         return new_subg
+
+    @staticmethod
+    def _attach_global_degree_metadata(graph, feature_graph):
+        global_node_ids = getattr(feature_graph, "global_node_ids", None)
+        if global_node_ids is None:
+            return
+
+        num_feature_nodes = len(global_node_ids)
+        if num_feature_nodes > graph.num_nodes:
+            raise ValueError("Feature-node metadata exceeds prompted graph size")
+
+        graph.global_node_id = torch.full(
+            (graph.num_nodes,), -1, dtype=torch.long
+        )
+        graph.global_node_degree = torch.full(
+            (graph.num_nodes,), -1, dtype=torch.long
+        )
+        graph.global_degree_rank = torch.full(
+            (graph.num_nodes,), -1, dtype=torch.long
+        )
+        graph.global_graph_num_nodes = torch.full(
+            (graph.num_nodes,), int(feature_graph.global_num_nodes), dtype=torch.long
+        )
+        graph.real_node_mask = torch.zeros(graph.num_nodes, dtype=torch.bool)
+
+        graph.global_node_id[:num_feature_nodes] = torch.as_tensor(
+            global_node_ids, dtype=torch.long
+        )
+        graph.global_node_degree[:num_feature_nodes] = torch.as_tensor(
+            feature_graph.global_node_degrees, dtype=torch.long
+        )
+        graph.global_degree_rank[:num_feature_nodes] = torch.as_tensor(
+            feature_graph.global_degree_ranks, dtype=torch.long
+        )
+        graph.real_node_mask[:num_feature_nodes] = True
 
     def get_collate_fn(self):
         return OFA_collater()
@@ -222,11 +276,21 @@ class SubgraphDataset(GraphTextDataset):
         else:
             self.adj = csr_array((torch.ones(len(edge_index[0])), (edge_index[0], edge_index[1]),),
                                  shape=(self.g.num_nodes, self.g.num_nodes), )
+        self._initialize_global_degree_metadata()
         self.class_emb = class_emb
         self.prompt_edge_emb = prompt_edge_emb
         self.hop = hop
         self.data_idx = data_idx
         self.class_mapping = class_mapping
+
+    def _initialize_global_degree_metadata(self):
+        degrees = np.asarray(self.adj.sum(axis=0)).reshape(-1)
+        self.global_node_degrees = torch.as_tensor(degrees, dtype=torch.long)
+        order = torch.argsort(
+            self.global_node_degrees, descending=True, stable=True
+        )
+        self.global_degree_ranks = torch.empty_like(order)
+        self.global_degree_ranks[order] = torch.arange(len(order), dtype=torch.long)
 
     def __len__(self):
         return len(self.data_idx)
@@ -251,7 +315,14 @@ class SubgraphDataset(GraphTextDataset):
         feat = self.g.node_text_feat[neighbors] # 如cora_node, (k+1, D) 子图节点的文本特征, k为邻居节点数; cora_link, (k+2, D)
         e_type = torch.zeros(len(edge_index[0]), dtype=torch.long) # (e,)，原图中所有原生边的类型都是0
         edge_feat = self.g.edge_text_feat.repeat(len(edge_index[0]), axis=0) # (e, D) 子图边的文本特征, (例如：SingleGraphOFADataset.add_text_emb)
-        return (feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep,)
+        node_ids = torch.as_tensor(neighbors, dtype=torch.long)
+        return FeatureGraph(
+            (feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep),
+            global_node_ids=node_ids,
+            global_node_degrees=self.global_node_degrees[node_ids],
+            global_degree_ranks=self.global_degree_ranks[node_ids],
+            global_num_nodes=self.g.num_nodes,
+        )
 
     def make_prompt_node(self, feat, class_emb): # 入参的feat是节点文本特征
         # Only feature nodes and class nodes, no NOI node.
@@ -414,6 +485,7 @@ class SubgraphKGHierDataset(SubgraphHierDataset):
         if adj is None and fs_edges is not None:
             self.adj = csr_array((torch.ones(len(fs_edges[0])), (fs_edges[0], fs_edges[1]),),
                                  shape=(self.g.num_nodes, self.g.num_nodes), )
+            self._initialize_global_degree_metadata()
         self.remove_edge = remove_edge
 
     def __len__(self):
@@ -459,7 +531,14 @@ class SubgraphKGHierDataset(SubgraphHierDataset):
 
         # Inverse edge type index equals orignal edge type index plus # edge types.
         edge_feat = self.g.edge_text_feat[torch.cat([edge_type, edge_type + int(len(self.g.edge_text_feat) / 2)])]
-        return (feat, edge_feat, edge_index, e_type, target_node_id, embs, label, binary_rep,)
+        node_ids = torch.as_tensor(neighbors, dtype=torch.long)
+        return FeatureGraph(
+            (feat, edge_feat, edge_index, e_type, target_node_id, embs, label, binary_rep),
+            global_node_ids=node_ids,
+            global_node_degrees=self.global_node_degrees[node_ids],
+            global_degree_ranks=self.global_degree_ranks[node_ids],
+            global_num_nodes=self.g.num_nodes,
+        )
 
 
 class GraphListDataset(GraphTextDataset):
@@ -486,7 +565,18 @@ class GraphListDataset(GraphTextDataset):
         e_type = torch.zeros(len(edge_index[0]), dtype=torch.long)
         target_node_id = list(range(len(feat)))
         label, emb, binary_rep = self.process_label(label)
-        return feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep
+        degree = torch.bincount(edge_index[1], minlength=len(feat))
+        order = torch.argsort(degree, descending=True, stable=True)
+        rank = torch.empty_like(order)
+        rank[order] = torch.arange(len(order), dtype=torch.long)
+        node_ids = torch.arange(len(feat), dtype=torch.long)
+        return FeatureGraph(
+            (feat, edge_feat, edge_index, e_type, target_node_id, emb, label, binary_rep),
+            global_node_ids=node_ids,
+            global_node_degrees=degree,
+            global_degree_ranks=rank,
+            global_num_nodes=len(feat),
+        )
 
     def make_prompt_node(self, feat, class_emb):
         if not self.no_class_node:

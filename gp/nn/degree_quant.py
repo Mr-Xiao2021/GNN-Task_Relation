@@ -1,4 +1,4 @@
-"""Inference-only helpers for degree-aware mixed-precision simulation."""
+"""Inference-only helpers for degree-aware mixed-precision execution."""
 
 import math
 from typing import Optional
@@ -53,12 +53,13 @@ def mixed_fake_quantize(
         raise TypeError("low_precision_mask must be a boolean tensor")
     if low_precision_mask.ndim != 1 or len(low_precision_mask) != len(tensor):
         raise ValueError("low_precision_mask must match tensor's first dimension")
-    if not torch.any(low_precision_mask):
+    selected = tensor[low_precision_mask]
+    if selected.numel() == 0:
         return tensor
 
     output = tensor.clone()
     output[low_precision_mask] = symmetric_fake_quantize(
-        tensor[low_precision_mask], num_bits=num_bits
+        selected, num_bits=num_bits
     )
     return output
 
@@ -71,16 +72,17 @@ def mixed_precision_linear(
     quantized_weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Run FP32 rows normally and selected rows through a fake-INT linear path."""
-    if low_precision_mask is None or not torch.any(low_precision_mask):
+    if low_precision_mask is None:
+        return inputs @ weight
+    low_inputs = inputs[low_precision_mask]
+    if low_inputs.numel() == 0:
         return inputs @ weight
 
     # Keep the reference GEMM shape unchanged for bitwise-reproducible FP32 rows.
     # Splitting those rows changes CUDA's reduction path and can alter predictions
     # after several message-passing layers.
     output = inputs @ weight
-    quantized_inputs = symmetric_fake_quantize(
-        inputs[low_precision_mask], num_bits=num_bits
-    )
+    quantized_inputs = symmetric_fake_quantize(low_inputs, num_bits=num_bits)
     if quantized_weight is None:
         quantized_weight = symmetric_fake_quantize(
             weight, num_bits=num_bits, channel_axis=1
@@ -90,6 +92,172 @@ def mixed_precision_linear(
     )
     output[low_precision_mask] = quantized_output
     return output
+
+
+def symmetric_quantize_int8(
+    tensor: torch.Tensor,
+    channel_axis: Optional[int] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return signed INT8 values and their symmetric dequantization scale."""
+    if tensor.numel() == 0:
+        raise ValueError("Cannot quantize an empty tensor")
+    if not tensor.is_floating_point():
+        raise TypeError("symmetric_quantize_int8 expects a floating-point tensor")
+
+    if channel_axis is None:
+        max_abs = tensor.detach().abs().amax()
+    else:
+        channel_axis %= tensor.ndim
+        reduce_dims = tuple(dim for dim in range(tensor.ndim) if dim != channel_axis)
+        max_abs = tensor.detach().abs().amax(dim=reduce_dims, keepdim=True)
+
+    scale = max_abs / 127
+    safe_scale = torch.where(scale > 0, scale, torch.ones_like(scale))
+    quantized = torch.round(tensor / safe_scale).clamp(-127, 127).to(torch.int8)
+    return quantized, safe_scale
+
+
+def _int8_mm(lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
+    """Execute INT8 x INT8 -> INT32 matrix multiplication.
+
+    CUDA's cuBLASLt INT8 path used by ``torch._int_mm`` requires the row count
+    to be a positive multiple of 32 on the target H100, so mixed node groups
+    are padded and sliced back. The CPU path is a correctness reference for
+    tests; production performance measurements use CUDA.
+    """
+    if lhs.dtype != torch.int8 or rhs.dtype != torch.int8:
+        raise TypeError("_int8_mm expects INT8 inputs")
+    if lhs.ndim != 2 or rhs.ndim != 2 or lhs.shape[1] != rhs.shape[0]:
+        raise ValueError("Incompatible INT8 matrix shapes")
+
+    if lhs.device.type != "cuda":
+        return lhs.to(torch.int32) @ rhs.to(torch.int32)
+
+    rows = lhs.shape[0]
+    padded_rows = max(32, math.ceil(rows / 32) * 32)
+    if padded_rows != rows:
+        padded = torch.zeros(
+            (padded_rows, lhs.shape[1]), device=lhs.device, dtype=torch.int8
+        )
+        padded[:rows] = lhs
+        lhs = padded
+    return torch._int_mm(lhs.contiguous(), rhs.contiguous())[:rows]
+
+
+def mixed_int8_linear(
+    inputs: torch.Tensor,
+    weight: torch.Tensor,
+    low_precision_mask: torch.Tensor,
+    quantized_weight: Optional[torch.Tensor] = None,
+    weight_scale: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Run FP32 rows with GEMM and low rows with a real INT8 GEMM kernel."""
+    if low_precision_mask.dtype != torch.bool:
+        raise TypeError("low_precision_mask must be boolean")
+    if low_precision_mask.ndim != 1 or len(low_precision_mask) != len(inputs):
+        raise ValueError("low_precision_mask must match inputs' first dimension")
+    low_inputs = inputs[low_precision_mask]
+    if low_inputs.numel() == 0:
+        return inputs @ weight
+
+    output = torch.empty(
+        (inputs.shape[0], weight.shape[1]),
+        device=inputs.device,
+        dtype=inputs.dtype,
+    )
+    high_precision_mask = ~low_precision_mask
+    high_inputs = inputs[high_precision_mask]
+    if high_inputs.numel() > 0:
+        output[high_precision_mask] = high_inputs @ weight
+
+    q_inputs, input_scale = symmetric_quantize_int8(low_inputs)
+    if quantized_weight is None or weight_scale is None:
+        quantized_weight, weight_scale = symmetric_quantize_int8(
+            weight, channel_axis=1
+        )
+    accumulator = _int8_mm(q_inputs, quantized_weight)
+    low_output = accumulator.to(inputs.dtype) * input_scale * weight_scale
+    output[low_precision_mask] = symmetric_fake_quantize(low_output, num_bits=8)
+    return output
+
+
+def mixed_int8_mean_aggregate(
+    messages: torch.Tensor,
+    target_index: torch.Tensor,
+    low_precision_mask: torch.Tensor,
+    num_nodes: int,
+) -> torch.Tensor:
+    """Mean-aggregate low messages with INT8 values and INT32 accumulators."""
+    if len(messages) != len(target_index) or len(messages) != len(low_precision_mask):
+        raise ValueError("messages, target_index, and mask must have equal lengths")
+    if low_precision_mask.dtype != torch.bool:
+        raise TypeError("low_precision_mask must be boolean")
+
+    feature_dim = messages.shape[1]
+    output = torch.zeros(
+        (num_nodes, feature_dim), device=messages.device, dtype=messages.dtype
+    )
+
+    low_messages = messages[low_precision_mask]
+    if low_messages.numel() > 0:
+        q_messages, message_scale = symmetric_quantize_int8(low_messages)
+        int32_sum = torch.zeros(
+            (num_nodes, feature_dim), device=messages.device, dtype=torch.int32
+        )
+        low_targets = target_index[low_precision_mask]
+        int32_sum.scatter_add_(
+            0,
+            low_targets.view(-1, 1).expand(-1, feature_dim),
+            q_messages.to(torch.int32),
+        )
+        output += int32_sum.to(messages.dtype) * message_scale
+
+    high_precision_mask = ~low_precision_mask
+    high_messages = messages[high_precision_mask]
+    if high_messages.numel() > 0:
+        high_targets = target_index[high_precision_mask]
+        output.scatter_add_(
+            0,
+            high_targets.view(-1, 1).expand(-1, feature_dim),
+            high_messages,
+        )
+
+    counts = torch.bincount(target_index, minlength=num_nodes).clamp_min(1)
+    return output / counts.to(messages.dtype).view(-1, 1)
+
+
+def global_degree_mask(
+    global_degree_rank: torch.Tensor,
+    global_num_nodes: torch.Tensor,
+    real_node_mask: torch.Tensor,
+    high_precision_percent: float,
+) -> torch.Tensor:
+    """Select real nodes by their stable degree rank in the source graph.
+
+    Rank zero is the highest-degree source-graph node. Artificial NOI and class
+    prompt nodes have no source-graph identity and always stay in FP32.
+    """
+    if not 0 <= high_precision_percent <= 100:
+        raise ValueError(
+            "high_precision_percent must be in [0, 100], "
+            f"got {high_precision_percent}"
+        )
+    if global_degree_rank.ndim != 1:
+        raise ValueError("global_degree_rank must be one-dimensional")
+    if global_num_nodes.shape != global_degree_rank.shape:
+        raise ValueError("global_num_nodes must match global_degree_rank")
+    if real_node_mask.shape != global_degree_rank.shape:
+        raise ValueError("real_node_mask must match global_degree_rank")
+    if real_node_mask.dtype != torch.bool:
+        raise TypeError("real_node_mask must be boolean")
+
+    cutoffs = torch.ceil(
+        global_num_nodes.to(torch.float64) * float(high_precision_percent) / 100.0
+    ).to(torch.long)
+    selected_real = real_node_mask & (global_degree_rank >= 0) & (
+        global_degree_rank < cutoffs
+    )
+    return selected_real | ~real_node_mask
 
 
 def high_degree_mask(

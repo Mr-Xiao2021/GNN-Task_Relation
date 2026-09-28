@@ -21,8 +21,9 @@ profiled_total = encode + gnn + other
 `gnn_core_seconds` 另外记录纯 `model.model`（`PyGRGCNEdge`）的设备时间，用来判断 GNN 内部与 projection/head 的开销；它是诊断字段，不参与上述三阶段占比。
 
 脚本还会在无插桩的 Encode repeats 完成后，额外复放一次相同的
-`dataset.text2feature(texts)`，将 SentenceEncoder 内部聚合为 Transformer forward、
-全层 QKV projection、Attention 和 FFN。结果位于 `transformer_profile`，该诊断 pass
+`dataset.text2feature(texts)`，将 SentenceEncoder 内部聚合为 tokenizer、H2D、
+Transformer forward、output cast、pooling、D2H 和 CPU 聚合，并继续分解全层 QKV
+projection、Attention 和 FFN。结果位于 `transformer_profile`，该诊断 pass
 不参与 `encode_seconds` 或 `profiled_total_seconds`。如需完全跳过，可传入
 `--skip-transformer-profile`。该组件诊断只实现单卡 CUDA Event 计时；CPU 运行时
 必须使用这个跳过参数，原有 Encode/GNN/Other 逻辑仍可照常执行。
@@ -221,7 +222,7 @@ bash /path/to/the/runner.sh
 | `gnn_percent` | `gnn_seconds / profiled_total_seconds` |
 | `other_percent` | `other_seconds / profiled_total_seconds` |
 | `timing_stats` | 每个阶段的 samples、median、Q1、Q3、IQR、min 和 max |
-| `transformer_profile` | 独立诊断 replay 的 Transformer 总时间及全层 QKV、Attention、FFN 聚合时间；不提供逐层结果 |
+| `transformer_profile` | 独立诊断 replay 的 Encode 阶段分解、Transformer 总时间及全层 QKV、Attention、FFN 聚合时间；不提供逐层结果 |
 | `runs` | 每次 repeat 的原始时间和 workload |
 | `encoded_text_entries` | `texts.pkl` 中被编码的文本条目数，不是去重文本数 |
 | `text_encoder_micro_batches` | 按各 leaf text group 分批后的编码 micro-batch 数 |
@@ -240,6 +241,10 @@ projection；它还包含 O projection、dropout，以及部分架构的 residua
 [`exp/encode/tf_profile/README.md`](../../encode/tf_profile/README.md)。
 组件边界在 BERT、DistilBERT 和 Llama 之间不同，这组细分数据只用于同一 Encoder
 架构下不同精度或实现策略的对比，不用于跨架构比较 Attention/FFN 百分比。
+`transformer_profile.encode_phase_profile` 另外给出完整 Encode replay 的近似可加分解；
+主表中的 CPU 阶段使用 `perf_counter`、GPU 阶段使用 CUDA Event，二者之和与 replay
+墙钟的差值保存在 `partition_residual_seconds`。`.cpu()` 调用墙钟会包含等待此前 GPU
+工作的时间，只能查看 `non_additive_api_wall_seconds`，不能与主阶段重复相加。
 
 `heat_style_comparable=true` 表示当前命令满足：完整 test dataset、完整 loader、2-hop、已加载 checkpoint、`num_workers=0`，且各 repeat 的汇总 workload 规模一致。它仍不代表采样身份逐项相同或 cache 身份已经自动验证；由于硬件、后端模型和论文未公开参数仍有差异，`strict_heat_reproduction` 固定为 `false`。
 

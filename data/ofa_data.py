@@ -71,7 +71,13 @@ class OFAPygDataset(InMemoryDataset, ABC):
             raise NotImplementedError("LLM encoder is not defined")
         if data is None:
             return None
-        embeddings = self.encoder.encode(data).cpu().numpy()
+        embeddings = self.encoder.encode(data)
+        transformer_profiler = getattr(self.encoder, "_transformer_profiler", None)
+        if transformer_profiler is None:
+            embeddings = embeddings.cpu().numpy()
+        else:
+            with transformer_profiler.wall_stage("cpu_to_numpy"):
+                embeddings = embeddings.cpu().numpy()
         return embeddings
 
     @property

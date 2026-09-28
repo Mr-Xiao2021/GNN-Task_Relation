@@ -66,7 +66,7 @@ def parse_args():
         "--skip-transformer-profile",
         action="store_true",
         help=(
-            "Skip the additional aggregate Transformer/QKV/Attention/FFN replay"
+            "Skip the additional fine-grained Encode/Transformer replay"
         ),
     )
     parser.add_argument(
@@ -282,6 +282,12 @@ def time_global_offline_encode(jobs, device, transformer_profiler=None):
     if transformer_profiler is not None:
         transformer_profile = transformer_profiler.summary()
         transformer_profile["profiled_encode_wall_seconds"] = elapsed
+        transformer_profile["encode_phase_profile"] = (
+            transformer_profiler.encode_phase_summary(
+                elapsed,
+                transformer_profile["model_forward_seconds"],
+            )
+        )
         transformer_profile["gpu_peak_allocated_bytes"] = result[
             "gpu_peak_allocated_bytes"
         ]
@@ -766,6 +772,46 @@ def make_report(
                 "Aggregated Attention plus FFN time exceeds Transformer forward time; "
                 "component hook overhead is too large for an additive interpretation."
             )
+        encode_phase_profile = transformer_profile.get("encode_phase_profile")
+        if encode_phase_profile is not None:
+            expected_pipeline_calls = {
+                "tokenization": total_text_micro_batches,
+                "h2d": total_text_micro_batches,
+                "model_forward": total_text_micro_batches,
+                "output_cast": total_text_micro_batches,
+                "pooling": total_text_micro_batches,
+                "d2h": total_text_micro_batches,
+                "profiler_flush": total_text_micro_batches,
+                "cpu_concatenate": total_text_groups,
+                "cpu_to_numpy": total_text_groups,
+            }
+            actual_pipeline_calls = encode_phase_profile["pipeline_stage_calls"]
+            encode_phase_profile["expected_workload_stage_calls"] = (
+                expected_pipeline_calls
+            )
+            encode_phase_profile["workload_call_count_matches"] = (
+                actual_pipeline_calls == expected_pipeline_calls
+            )
+            if not encode_phase_profile["pipeline_stage_coverage_complete"]:
+                warnings.append(
+                    "Fine-grained Encode stage calls do not match model-forward calls."
+                )
+            if actual_pipeline_calls != expected_pipeline_calls:
+                warnings.append(
+                    "Fine-grained Encode stage calls do not match the text workload manifest."
+                )
+            phase_residual = encode_phase_profile["partition_residual_seconds"]
+            profile_wall = transformer_profile["profiled_encode_wall_seconds"]
+            if phase_residual < 0:
+                warnings.append(
+                    "Fine-grained Encode stage sum exceeds the profiled Encode wall time; "
+                    "inspect mixed-clock and profiler overhead before additive interpretation."
+                )
+            elif profile_wall and phase_residual / profile_wall > 0.05:
+                warnings.append(
+                    "More than 5% of the profiled Encode wall time remains unattributed by "
+                    "the fine-grained stage accounting."
+                )
     effective_node_limits = [
         setting["max_nodes_per_hop"]
         for setting in hop_settings
@@ -779,7 +825,7 @@ def make_report(
     )
     first_parameter = next(model.parameters())
     report = {
-        "report_version": 4,
+        "report_version": 5,
         "mode": "offline_heat_style",
         "strict_heat_reproduction": False,
         "heat_style_comparable": (

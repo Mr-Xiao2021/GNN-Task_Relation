@@ -6,6 +6,7 @@ import gc
 import importlib.util
 import sys
 import tempfile
+import time
 import unittest
 import weakref
 from pathlib import Path
@@ -134,10 +135,18 @@ class ToyDistilBertModel(nn.Module):
             [ToyDistilLayer(width) for _ in range(layers)]
         )
 
-    def forward(self, input_ids):
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        output_hidden_states=False,
+        return_dict=False,
+    ):
         hidden = self.embeddings(input_ids)
         for layer in self.transformer.layer:
             hidden = layer(hidden)
+        if return_dict:
+            return {"hidden_states": (hidden,)}
         return hidden
 
 
@@ -289,6 +298,146 @@ class AggregateTransformerProfilerTest(unittest.TestCase):
         gc.collect()
         self.assertIsNone(model_reference())
 
+    def test_encode_pipeline_profiles_all_phases(self):
+        model = ToyDistilBertModel(layers=2).to(self.device).eval()
+        cpu_batches = [
+            torch.randint(0, 32, (2, 5)),
+            torch.randint(0, 32, (1, 4)),
+        ]
+        with torch.inference_mode():
+            reference = torch.cat(
+                [model(batch.to(self.device)).mean(dim=1).cpu() for batch in cpu_batches]
+            )
+        profiler = AggregateTransformerProfiler(model, device=self.device).start()
+        try:
+            torch.cuda.synchronize(self.device)
+            started = time.perf_counter()
+            outputs = []
+            with torch.inference_mode():
+                for cpu_batch in cpu_batches:
+                    with profiler.wall_stage("tokenization"):
+                        tokenized = cpu_batch.clone()
+                    with profiler.cuda_stage("h2d"):
+                        with profiler.wall_stage("h2d_api"):
+                            token_batch = tokenized.to(self.device)
+                    output = model(token_batch)
+                    with profiler.cuda_stage("output_cast"):
+                        output = output.to(torch.float32)
+                    with profiler.cuda_stage("pooling"):
+                        output = output.mean(dim=1)
+                    with profiler.cuda_stage("d2h"):
+                        with profiler.wall_stage("d2h_api"):
+                            output = output.cpu()
+                    with profiler.wall_stage("profiler_flush"):
+                        profiler.flush_completed()
+                    outputs.append(output)
+            with profiler.wall_stage("cpu_concatenate"):
+                actual = torch.cat(outputs)
+            with profiler.wall_stage("cpu_to_numpy"):
+                actual_numpy = actual.cpu().numpy()
+            torch.cuda.synchronize(self.device)
+            elapsed = time.perf_counter() - started
+            report = profiler.summary()
+            phase = profiler.encode_phase_summary(
+                elapsed,
+                report["model_forward_seconds"],
+            )
+        finally:
+            profiler.close()
+
+        torch.testing.assert_close(actual, reference)
+        torch.testing.assert_close(torch.from_numpy(actual_numpy), reference)
+        expected_calls = {
+            "tokenization": 2,
+            "h2d": 2,
+            "model_forward": 2,
+            "output_cast": 2,
+            "pooling": 2,
+            "d2h": 2,
+            "profiler_flush": 2,
+            "cpu_concatenate": 1,
+            "cpu_to_numpy": 1,
+        }
+        self.assertEqual(phase["pipeline_stage_calls"], expected_calls)
+        self.assertEqual(phase["expected_pipeline_stage_calls"], expected_calls)
+        self.assertTrue(phase["pipeline_stage_coverage_complete"])
+        self.assertAlmostEqual(
+            phase["accounted_seconds"] + phase["partition_residual_seconds"],
+            elapsed,
+        )
+        self.assertAlmostEqual(
+            sum(phase["percent_of_profiled_encode_wall"].values()),
+            100.0,
+        )
+        for name, seconds in phase["stage_seconds"].items():
+            if name != "unattributed":
+                self.assertGreaterEqual(seconds, 0.0)
+        self.assertEqual(profiler._pending_pipeline_events, [])
+
+    def test_encode_phase_summary_preserves_raw_residual_and_resets(self):
+        model = ToyDistilBertModel(layers=1).to(self.device).eval()
+        profiler = AggregateTransformerProfiler(model, device=self.device)
+        profiler._calls["model_forward"] = 2
+        profiler._pipeline_wall_seconds.update(
+            {
+                "tokenization": 1.0,
+                "profiler_flush": 0.1,
+                "cpu_concatenate": 0.2,
+                "cpu_to_numpy": 0.05,
+                "h2d_api": 0.4,
+                "d2h_api": 3.0,
+            }
+        )
+        profiler._pipeline_cuda_seconds.update(
+            {"h2d": 0.5, "output_cast": 0.1, "pooling": 0.8, "d2h": 0.25}
+        )
+        profiler._pipeline_wall_calls.update(
+            {
+                "tokenization": 2,
+                "profiler_flush": 2,
+                "cpu_concatenate": 1,
+                "cpu_to_numpy": 1,
+                "h2d_api": 2,
+                "d2h_api": 2,
+            }
+        )
+        profiler._pipeline_cuda_calls.update(
+            {"h2d": 2, "output_cast": 2, "pooling": 2, "d2h": 2}
+        )
+
+        phase = profiler.encode_phase_summary(4.0, 2.0)
+        self.assertAlmostEqual(phase["accounted_seconds"], 5.0)
+        self.assertAlmostEqual(phase["partition_residual_seconds"], -1.0)
+        self.assertAlmostEqual(phase["stage_seconds"]["unattributed"], -1.0)
+        self.assertEqual(
+            phase["non_additive_api_wall_seconds"],
+            {"h2d": 0.4, "d2h": 3.0},
+        )
+        self.assertTrue(phase["pipeline_stage_coverage_complete"])
+
+        profiler.reset()
+        reset_phase = profiler.encode_phase_summary(1.0, 0.0)
+        self.assertEqual(reset_phase["accounted_seconds"], 0.0)
+        self.assertTrue(
+            all(call_count == 0 for call_count in reset_phase["pipeline_stage_calls"].values())
+        )
+        profiler.close()
+
+    def test_cuda_events_can_be_flushed_per_micro_batch(self):
+        model = ToyBertModel(layers=1).to(self.device).eval()
+        profiler = AggregateTransformerProfiler(model, device=self.device).start()
+        with torch.inference_mode():
+            output = model(torch.randint(0, 32, (1, 3), device=self.device))
+            output.cpu()
+        profiler.flush_completed()
+        self.assertEqual(profiler._pending_cuda_events, [])
+        report = profiler.summary()
+        profiler.close()
+        self.assertEqual(report["backend"], "cuda_event")
+        self.assertTrue(report["coverage_complete"])
+
+
+class OfflineReplayTest(unittest.TestCase):
     def test_offline_replay_still_calls_dataset_text2feature(self):
         offline = load_offline_timing_module()
         offline.utils = SimpleNamespace(synchronize=lambda _device: None)
@@ -309,7 +458,16 @@ class AggregateTransformerProfilerTest(unittest.TestCase):
                 self.reset_calls += 1
 
             def summary(self):
-                return {"transformer_total_seconds": 0.25}
+                return {
+                    "model_forward_seconds": 0.25,
+                    "transformer_total_seconds": 0.25,
+                }
+
+            def encode_phase_summary(self, wall_seconds, model_forward_seconds):
+                return {
+                    "profiled_encode_wall_seconds": wall_seconds,
+                    "model_forward_seconds": model_forward_seconds,
+                }
 
         dataset = FakeDataset()
         profiler = FakeProfiler()
@@ -329,19 +487,10 @@ class AggregateTransformerProfilerTest(unittest.TestCase):
             result["transformer_profile"]["transformer_total_seconds"],
             0.25,
         )
-
-    def test_cuda_events_can_be_flushed_per_micro_batch(self):
-        model = ToyBertModel(layers=1).to(self.device).eval()
-        profiler = AggregateTransformerProfiler(model, device=self.device).start()
-        with torch.inference_mode():
-            output = model(torch.randint(0, 32, (1, 3), device=self.device))
-            output.cpu()
-        profiler.flush_completed()
-        self.assertEqual(profiler._pending_cuda_events, [])
-        report = profiler.summary()
-        profiler.close()
-        self.assertEqual(report["backend"], "cuda_event")
-        self.assertTrue(report["coverage_complete"])
+        self.assertIn(
+            "encode_phase_profile",
+            result["transformer_profile"],
+        )
 
 
 if __name__ == "__main__":

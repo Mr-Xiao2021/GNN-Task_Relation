@@ -63,15 +63,46 @@ class SentenceEncoder:
         with torch.no_grad():
             for start_index in trange(0, len(texts), self.batch_size, desc="Batches", disable=False, ):
                 sentences_batch = texts[start_index: start_index + self.batch_size]
-                text_tokens = self.model.tokenizer(sentences_batch, return_tensors="pt", padding="longest", truncation=True,
-                                                   max_length=self.max_length).to(self.device)
-                embeddings, _ = self.model.encode(text_tokens, pooling=True)
-                embeddings = embeddings.cpu()
-                if transformer_profiler is not None:
-                    # The D2H copy above completes this micro-batch's CUDA events.
-                    transformer_profiler.flush_completed()
+                if transformer_profiler is None:
+                    text_tokens = self.model.tokenizer(
+                        sentences_batch,
+                        return_tensors="pt",
+                        padding="longest",
+                        truncation=True,
+                        max_length=self.max_length,
+                    ).to(self.device)
+                    embeddings, _ = self.model.encode(text_tokens, pooling=True)
+                    embeddings = embeddings.cpu()
+                else:
+                    with transformer_profiler.wall_stage("tokenization"):
+                        text_tokens = self.model.tokenizer(
+                            sentences_batch,
+                            return_tensors="pt",
+                            padding="longest",
+                            truncation=True,
+                            max_length=self.max_length,
+                        )
+                    with transformer_profiler.cuda_stage("h2d"):
+                        with transformer_profiler.wall_stage("h2d_api"):
+                            text_tokens = text_tokens.to(self.device)
+                    embeddings, _ = self.model.encode(
+                        text_tokens,
+                        pooling=True,
+                        transformer_profiler=transformer_profiler,
+                    )
+                    with transformer_profiler.cuda_stage("d2h"):
+                        with transformer_profiler.wall_stage("d2h_api"):
+                            embeddings = embeddings.cpu()
+                    # D2H completes the model/pooling events. The D2H end marker
+                    # itself may be folded by the next batch or final summary.
+                    with transformer_profiler.wall_stage("profiler_flush"):
+                        transformer_profiler.flush_completed()
                 all_embeddings.append(embeddings)
-        all_embeddings = torch.cat(all_embeddings, dim=0)
+        if transformer_profiler is None:
+            all_embeddings = torch.cat(all_embeddings, dim=0)
+        else:
+            with transformer_profiler.wall_stage("cpu_concatenate"):
+                all_embeddings = torch.cat(all_embeddings, dim=0)
         if not to_tensor:
             all_embeddings = all_embeddings.numpy()
 

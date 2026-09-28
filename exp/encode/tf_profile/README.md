@@ -17,9 +17,9 @@ time_global_offline_encode
 exp/time_pipe/encode-gnn/offline_encode_gnn_time.py
 ```
 
-`models/transformer_profiler.py` 只负责发现少量组件并聚合 CUDA Event；不会输出
-逐层 block、逐模块列表或 operator trace。组件 profiler 仅支持单张 CUDA GPU，
-不实现 CPU 计时或多设备兼容。
+`models/transformer_profiler.py` 发现少量 Transformer 组件并聚合 CUDA Event；不会输出
+逐层 block、逐模块列表或 operator trace。它还在同一次诊断 replay 中聚合 tokenizer、
+CPU 拼接等 host 墙钟阶段。设备阶段仍只支持单张 CUDA GPU，不实现多设备兼容。
 
 ## 输出
 
@@ -39,6 +39,7 @@ exp/time_pipe/encode-gnn/offline_encode_gnn_time.py
 | `calls` / `expected_calls` | 聚合调用数及按层数推导的期望值 |
 | `coverage_complete` | 组件调用数是否完整 |
 | `workload_call_count_matches` | model forward 次数是否等于文本 micro-batch 数 |
+| `encode_phase_profile` | 完整 Encode replay 的 tokenizer、传输、model、pooling、CPU 聚合及残差分解 |
 
 这里的 `attention_seconds` 不是严格的 `QK^T + softmax + AV` kernel 时间。
 普通模块 hook 无法可靠切开这些函数调用；该字段还会包含 O projection、dropout，
@@ -56,6 +57,44 @@ transformer_total ~= QKV + Attention + FFN + Other
 
 所有层都聚合到同一个字段，不提供逐层结果。
 
+### Encode 阶段分解
+
+`transformer_profile.encode_phase_profile` 使用 CPU `perf_counter` 和 CUDA Event 混合构造
+近似可加的关键路径分解：
+
+```text
+accounted_seconds
+  = tokenization
+  + h2d
+  + model_forward
+  + output_cast
+  + pooling
+  + d2h
+  + profiler_flush
+  + cpu_concatenate
+  + cpu_to_numpy
+
+partition_residual_seconds
+  = profiled_encode_wall_seconds - accounted_seconds
+```
+
+| 子字段 | 含义 |
+| --- | --- |
+| `stage_seconds` | 上述各阶段的秒数，以及未截断正负号的 `unattributed` 残差 |
+| `stage_backends` | 每个阶段使用 `perf_counter`、CUDA Event 或派生残差 |
+| `percent_of_profiled_encode_wall` | 各阶段相对同一次 profile replay 墙钟的比例 |
+| `pipeline_stage_calls` | 各阶段实际调用数 |
+| `expected_workload_stage_calls` | 按 micro-batch 数和 leaf group 数得到的期望调用数 |
+| `pipeline_stage_coverage_complete` | 阶段调用数是否与 model forward 自洽 |
+| `workload_call_count_matches` | 阶段调用数是否与文本 workload manifest 一致 |
+| `non_additive_api_wall_seconds` | `.to(device)` 和 `.cpu()` Python 调用的观测墙钟，仅用于诊断 |
+
+其中 `pooling` 包含 mean pooling 和 L2 normalization。`.cpu()` 的 Python 调用会等待此前
+异步提交的 model 与 pooling，因此 `non_additive_api_wall_seconds.d2h` 会与前述 CUDA
+阶段重叠，不能再次加入 `accounted_seconds`；主分解中的 `d2h` 使用 CUDA Event。
+`unattributed` 包含 Python 调度、递归/list 处理、Event 开销和混合时钟误差，保留原始
+正负值用于审计。
+
 BERT、DistilBERT 和 Llama 的模块边界并不完全相同。例如 BERT 的 Attention/FFN
 模块还包住部分 residual、dropout 和 LayerNorm，而 Llama 的 norm 位于这些模块之外。
 因此组件结果用于比较**同一 Encoder 架构的不同精度/实现策略**，不能直接比较不同
@@ -69,8 +108,8 @@ BERT、DistilBERT 和 Llama 的模块边界并不完全相同。例如 BERT 的 
 - hook 和 CUDA Event 不会污染原有 `encode_seconds`。
 - `profiled_encode_wall_seconds` 是带监测开销的诊断值。
 - 额外 profile replay 不计入 `profiled_total_seconds`。
-- 每个 SentenceEncoder micro-batch 的 embedding 回传 CPU 后立即汇总并释放 Event，
-  不会为完整 `texts.pkl` 无限保留 CUDA Event。
+- 每个 SentenceEncoder micro-batch 的 embedding 回传 CPU 后汇总所有已完成 Event；尚未完成的
+  D2H 结束标记在下一批或最终同步时汇总，不会为完整 `texts.pkl` 无限保留 Event。
 
 如果只需要原来的 Encode/GNN/Other 报告，可传入：
 
@@ -148,6 +187,10 @@ done
 
 ## 六任务结果
 
+以下结果及日志由 report schema v4 生成，只包含 Transformer 内部分解。新增的
+`encode_phase_profile` 属于 schema v5，无法从旧日志反推；必须用当前代码重跑六任务后
+才能填写 tokenizer、H2D、pooling、D2H 等阶段表。
+
 六个任务均成功加载 checkpoint 并完成 profile，且
 `coverage_complete=true`、`workload_call_count_matches=true`。下表时间单位均为秒，
 括号内为相对 `transformer_total_seconds` 的占比。
@@ -198,9 +241,9 @@ QKV 和 FFN 的部分，两者计时范围不同，不能直接比较。
 
 ## 测试
 
-测试不下载 Hugging Face 权重，使用小型 BERT、DistilBERT 和 Llama 结构验证聚合
-调用数、输出不变、hook 清理、CUDA Event 释放，以及 offline replay 仍然调用
-`dataset.text2feature(texts)`：
+测试不下载 Hugging Face 权重，使用小型 BERT、DistilBERT 和 Llama 结构验证组件与
+Encode 阶段调用数、输出不变、加法残差、hook 清理、CUDA Event 释放，以及 offline
+replay 仍然调用 `dataset.text2feature(texts)`：
 
 ```powershell
 python -m unittest exp.encode.tf_profile.test_transformer_profiler -v
@@ -210,6 +253,8 @@ python -m unittest exp.encode.tf_profile.test_transformer_profiler -v
 
 ```powershell
 python -m py_compile models/transformer_profiler.py `
+  models/model.py `
+  data/ofa_data.py `
   exp/encode/tf_profile/test_transformer_profiler.py `
   exp/time_pipe/encode-gnn/offline_encode_gnn_time.py `
   utils.py

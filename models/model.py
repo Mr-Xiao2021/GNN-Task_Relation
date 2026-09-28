@@ -385,16 +385,23 @@ class LLMModel(torch.nn.Module):
 
         return self.pooling(outputs, text_tokens)
 
-    def encode(self, text_tokens, pooling=False):
+    def encode(self, text_tokens, pooling=False, transformer_profiler=None):
 
         with torch.no_grad():
             outputs = self.model(input_ids=text_tokens["input_ids"],
                                  attention_mask=text_tokens["attention_mask"],
                                  output_hidden_states=True,
                                  return_dict=True)["hidden_states"][-1]
-            outputs = outputs.to(torch.float32)
-            if pooling:
-                outputs = self.pooling(outputs, text_tokens)
+            if transformer_profiler is None:
+                outputs = outputs.to(torch.float32)
+                if pooling:
+                    outputs = self.pooling(outputs, text_tokens)
+            else:
+                with transformer_profiler.cuda_stage("output_cast"):
+                    outputs = outputs.to(torch.float32)
+                if pooling:
+                    with transformer_profiler.cuda_stage("pooling"):
+                        outputs = self.pooling(outputs, text_tokens)
 
             return outputs, text_tokens["attention_mask"]
 
